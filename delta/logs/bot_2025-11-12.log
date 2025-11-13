@@ -1,0 +1,177 @@
+2025-11-12 18:56:50.047 | INFO     | src.main:__init__:68 - Arbitrage Bot initialized
+2025-11-12 18:56:50.048 | INFO     | src.main:__init__:69 - Mode: auto
+2025-11-12 18:56:50.048 | INFO     | src.main:run_auto_cycle:138 - Starting auto cycle - scanning all symbols
+2025-11-12 18:56:51.635 | INFO     | src.data.loris_api:fetch_all_funding_rates:70 - Fetched 1429 symbols from Loris Tools
+2025-11-12 18:56:51.635 | INFO     | src.main:run_auto_cycle:147 - Scanning 1429 symbols from Loris Tools
+2025-11-12 18:56:51.638 | SUCCESS  | src.main:run_auto_cycle:153 - Found 73 opportunities
+2025-11-12 18:56:51.639 | INFO     | src.main:display_top_opportunities:363 - 
+  #  Symbole      Rate 1h    Rate 8h  $/h     Type           Prio
+---  ---------  ---------  ---------  ------  -------------  ------
+  1  ARK         -0.00666   -0.00904  $66.60  both_negative
+  2  0G          -0.00387   -0.00382  $38.70  both_negative
+  3  DOOD        -0.00358   -0.00376  $35.80  both_negative
+  4  BIO         -0.00173   -0.00386  $17.30  both_negative
+  5  DOLO        -0.00151   -0.00227  $15.10  both_negative
+  6  BABY        -0.0012    -0.00223  $12.00  both_negative
+  7  F            5e-05     -0.00883  $11.54  mixed
+  8  ASML         0.00073    0.0001   $7.17   standard
+  9  APT         -0.00063   -0.00114  $6.30   both_negative
+ 10  BERA        -0.00063   -0.00104  $6.30   both_negative
+2025-11-12 18:56:51.639 | SUCCESS  | src.main:display_top_opportunities:367 - 🏆 Best: ARK - $66.60/h ($442.40 per 8h cycle)
+2025-11-12 18:56:51.640 | INFO     | src.main:run_auto_cycle:168 - Active pairs: 0/5
+2025-11-12 18:56:51.640 | INFO     | src.main:run_auto_cycle:176 - Opening position for ARK/USDT ($66.60/h)
+2025-11-12 18:56:51.640 | INFO     | src.main:run_auto_cycle:176 - Opening position for 0G/USDT ($38.70/h)
+2025-11-12 18:56:51.640 | INFO     | src.main:run_auto_cycle:176 - Opening position for DOOD/USDT ($35.80/h)
+2025-11-12 18:56:51.640 | INFO     | src.main:run_auto_cycle:176 - Opening position for BIO/USDT ($17.30/h)
+2025-11-12 18:56:51.640 | INFO     | src.main:run_auto_cycle:176 - Opening position for DOLO/USDT ($15.10/h)
+2025-11-12 19:00:09.502 | INFO     | src.main:__init__:68 - Arbitrage Bot initialized
+2025-11-12 19:00:09.503 | INFO     | src.main:__init__:69 - Mode: auto
+2025-11-12 19:00:09.503 | INFO     | src.main:run_auto_cycle:138 - Starting auto cycle - scanning all symbols
+2025-11-12 19:00:11.079 | INFO     | src.data.loris_api:fetch_all_funding_rates:70 - Fetched 1429 symbols from Loris Tools
+2025-11-12 19:00:11.080 | INFO     | src.main:run_auto_cycle:147 - Scanning 1429 symbols from Loris Tools
+2025-11-12 19:00:11.083 | SUCCESS  | src.main:run_auto_cycle:153 - Found 72 opportunities
+2025-11-12 19:00:11.083 | INFO     | src.main:display_top_opportunities:363 - 
+  #  Symbole      Rate 1h    Rate 8h  $/h     Type           Prio
+---  ---------  ---------  ---------  ------  -------------  ------
+  1  ARK         -0.00666   -0.00892  $66.60  both_negative
+  2  0G          -0.00383   -0.00375  $38.30  both_negative
+  3  DOOD        -0.00361   -0.00374  $36.10  both_negative
+  4  BIO         -0.00178   -0.00458  $17.80  both_negative
+  5  DOLO        -0.00152   -0.00234  $15.20  both_negative
+  6  BABY        -0.00119   -0.00225  $11.90  both_negative
+  7  F            5e-05     -0.00889  $11.61  mixed
+  8  ASML         0.00073    0.0001   $7.17   standard
+  9  BERA        -0.00067   -0.00104  $6.70   both_negative
+ 10  APT         -0.00065   -0.00115  $6.50   both_negative
+2025-11-12 19:00:11.084 | SUCCESS  | src.main:display_top_opportunities:367 - 🏆 Best: ARK - $66.60/h ($443.60 per 8h cycle)
+2025-11-12 19:00:11.084 | INFO     | src.main:run_auto_cycle:168 - Active pairs: 0/5
+2025-11-12 19:00:11.084 | INFO     | src.main:run_auto_cycle:176 - Opening position for ARK/USDT ($66.60/h)
+2025-11-12 19:00:11.084 | INFO     | src.main:run_auto_cycle:176 - Opening position for 0G/USDT ($38.30/h)
+2025-11-12 19:00:11.084 | INFO     | src.main:run_auto_cycle:176 - Opening position for DOOD/USDT ($36.10/h)
+2025-11-12 19:00:11.084 | INFO     | src.main:run_auto_cycle:176 - Opening position for BIO/USDT ($17.80/h)
+2025-11-12 19:00:11.084 | INFO     | src.main:run_auto_cycle:176 - Opening position for DOLO/USDT ($15.20/h)
+2025-11-12 19:20:31.710 | INFO     | src.main:__init__:68 - Arbitrage Bot initialized
+2025-11-12 19:20:31.711 | INFO     | src.main:__init__:69 - Mode: auto
+2025-11-12 19:20:31.711 | INFO     | src.main:run_auto_cycle:138 - Starting auto cycle - scanning all symbols
+2025-11-12 19:20:33.275 | INFO     | src.data.loris_api:fetch_all_funding_rates:70 - Fetched 1429 symbols from Loris Tools
+2025-11-12 19:20:33.276 | INFO     | src.main:run_auto_cycle:147 - Scanning 1429 symbols from Loris Tools
+2025-11-12 19:20:33.277 | SUCCESS  | src.main:run_auto_cycle:153 - Found 23 opportunities
+2025-11-12 19:20:33.277 | INFO     | src.main:display_top_opportunities:363 - 
+  #  Symbole      Rate 1h    Rate 8h  $/h    Type           Prio
+---  ---------  ---------  ---------  -----  -------------  ------
+  1  AVNT        -0.00059   -0.00023  $5.90  both_negative
+  2  APT         -0.00028   -0.00039  $2.80  both_negative
+  3  ENA         -0.00023   -0.00026  $2.30  both_negative
+  4  BNB         -0.00022   -9e-05    $2.20  both_negative
+  5  BERA         0.0001    -0.00057  $1.71  mixed
+  6  ASTER        0.0001    -0.00041  $1.51  mixed
+  7  ATOM         0.0001    -0.00034  $1.43  mixed
+  8  EIGEN        0.0001    -0.00032  $1.40  mixed
+  9  APEX         0.0001    -0.00029  $1.36  mixed
+ 10  AVAX         0.0001    -0.00023  $1.29  mixed
+2025-11-12 19:20:33.278 | SUCCESS  | src.main:display_top_opportunities:367 - 🏆 Best: AVNT - $5.90/h ($44.90 per 8h cycle)
+2025-11-12 19:20:33.278 | INFO     | src.main:run_auto_cycle:168 - Active pairs: 0/5
+2025-11-12 19:20:33.278 | INFO     | src.main:run_auto_cycle:176 - Opening position for AVNT/USDT ($5.90/h)
+2025-11-12 19:20:33.278 | INFO     | src.main:run_auto_cycle:176 - Opening position for APT/USDT ($2.80/h)
+2025-11-12 19:20:33.278 | INFO     | src.main:run_auto_cycle:176 - Opening position for ENA/USDT ($2.30/h)
+2025-11-12 19:20:33.278 | INFO     | src.main:run_auto_cycle:176 - Opening position for BNB/USDT ($2.20/h)
+2025-11-12 19:20:33.279 | INFO     | src.main:run_auto_cycle:176 - Opening position for BERA/USDT ($1.71/h)
+2025-11-12 19:33:33.711 | INFO     | src.main:__init__:68 - Arbitrage Bot initialized
+2025-11-12 19:33:33.711 | INFO     | src.main:__init__:69 - Mode: auto
+2025-11-12 19:33:33.712 | INFO     | src.main:run_auto_cycle:138 - Starting auto cycle - scanning all symbols
+2025-11-12 19:33:35.305 | INFO     | src.data.loris_api:fetch_all_funding_rates:70 - Fetched 1429 symbols from Loris Tools
+2025-11-12 19:33:35.305 | INFO     | src.main:run_auto_cycle:147 - Scanning 1429 symbols from Loris Tools
+2025-11-12 19:33:35.306 | SUCCESS  | src.main:run_auto_cycle:153 - Found 22 opportunities
+2025-11-12 19:33:35.307 | INFO     | src.main:display_top_opportunities:363 - 
+  #  Symbole      Rate 1h    Rate 8h  $/h    Type           Prio
+---  ---------  ---------  ---------  -----  -------------  ------
+  1  AVNT        -0.00059   -0.00021  $5.90  both_negative
+  2  APT         -0.00028   -0.0004   $2.80  both_negative
+  3  ENA         -0.00023   -0.00029  $2.30  both_negative
+  4  BNB         -0.00022   -0.0001   $2.20  both_negative
+  5  BERA         0.0001    -0.00059  $1.74  mixed
+  6  ASTER        0.0001    -0.00044  $1.55  mixed
+  7  ATOM         0.0001    -0.00034  $1.43  mixed
+  8  EIGEN        0.0001    -0.00033  $1.41  mixed
+  9  APEX         0.0001    -0.00028  $1.35  mixed
+ 10  AVAX         0.0001    -0.00024  $1.30  mixed
+2025-11-12 19:33:35.307 | SUCCESS  | src.main:display_top_opportunities:367 - 🏆 Best: AVNT - $5.90/h ($45.10 per 8h cycle)
+2025-11-12 19:33:35.307 | INFO     | src.main:run_auto_cycle:168 - Active pairs: 0/5
+2025-11-12 19:33:35.307 | INFO     | src.main:run_auto_cycle:176 - Opening position for AVNT/USDT ($5.90/h)
+2025-11-12 19:33:35.307 | INFO     | src.main:run_auto_cycle:176 - Opening position for APT/USDT ($2.80/h)
+2025-11-12 19:33:35.307 | INFO     | src.main:run_auto_cycle:176 - Opening position for ENA/USDT ($2.30/h)
+2025-11-12 19:33:35.308 | INFO     | src.main:run_auto_cycle:176 - Opening position for BNB/USDT ($2.20/h)
+2025-11-12 19:33:35.308 | INFO     | src.main:run_auto_cycle:176 - Opening position for BERA/USDT ($1.74/h)
+2025-11-12 19:34:36.876 | INFO     | __main__:__init__:68 - Arbitrage Bot initialized
+2025-11-12 19:34:36.877 | INFO     | __main__:__init__:69 - Mode: auto
+2025-11-12 19:34:36.877 | INFO     | __main__:start:75 - ================================================================================
+2025-11-12 19:34:36.877 | INFO     | __main__:start:76 - 🚀 TIMING FUNDING ARBITRAGE BOT - STARTED
+2025-11-12 19:34:36.878 | INFO     | __main__:start:77 - ================================================================================
+2025-11-12 19:34:36.878 | INFO     | __main__:start:78 - Mode: auto
+2025-11-12 19:34:36.878 | INFO     | __main__:start:83 - Max concurrent pairs: 5
+2025-11-12 19:34:36.878 | INFO     | __main__:start:84 - Min profit/hour: $2.0
+2025-11-12 19:34:36.878 | INFO     | __main__:start:86 - Check interval: 60s
+2025-11-12 19:34:36.879 | INFO     | __main__:start:87 - ================================================================================
+2025-11-12 19:34:36.879 | INFO     | __main__:run_auto_cycle:138 - Starting auto cycle - scanning all symbols
+2025-11-12 19:34:38.450 | INFO     | src.data.loris_api:fetch_all_funding_rates:70 - Fetched 1429 symbols from Loris Tools
+2025-11-12 19:34:38.450 | INFO     | __main__:run_auto_cycle:147 - Scanning 1429 symbols from Loris Tools
+2025-11-12 19:34:38.451 | SUCCESS  | __main__:run_auto_cycle:153 - Found 22 opportunities
+2025-11-12 19:34:38.451 | INFO     | __main__:display_top_opportunities:363 - 
+  #  Symbole      Rate 1h    Rate 8h  $/h    Type           Prio
+---  ---------  ---------  ---------  -----  -------------  ------
+  1  AVNT        -0.00059   -0.00021  $5.90  both_negative
+  2  APT         -0.00028   -0.0004   $2.80  both_negative
+  3  ENA         -0.00023   -0.0003   $2.30  both_negative
+  4  BNB         -0.00022   -0.0001   $2.20  both_negative
+  5  BERA         0.0001    -0.00063  $1.79  mixed
+  6  ASTER        0.0001    -0.00044  $1.55  mixed
+  7  ATOM         0.0001    -0.00035  $1.44  mixed
+  8  EIGEN        0.0001    -0.00033  $1.41  mixed
+  9  APEX         0.0001    -0.00028  $1.35  mixed
+ 10  AVAX         0.0001    -0.00024  $1.30  mixed
+2025-11-12 19:34:38.452 | SUCCESS  | __main__:display_top_opportunities:367 - 🏆 Best: AVNT - $5.90/h ($45.10 per 8h cycle)
+2025-11-12 19:34:38.452 | INFO     | __main__:run_auto_cycle:168 - Active pairs: 0/5
+2025-11-12 19:34:38.452 | INFO     | __main__:run_auto_cycle:176 - Opening position for AVNT/USDT ($5.90/h)
+2025-11-12 19:34:38.452 | INFO     | __main__:run_auto_cycle:176 - Opening position for APT/USDT ($2.80/h)
+2025-11-12 19:34:38.452 | INFO     | __main__:run_auto_cycle:176 - Opening position for ENA/USDT ($2.30/h)
+2025-11-12 19:34:38.452 | INFO     | __main__:run_auto_cycle:176 - Opening position for BNB/USDT ($2.20/h)
+2025-11-12 19:34:38.453 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:141 - Auto-rebalancing triggered
+2025-11-12 19:34:38.453 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:142 -   From: Extended
+2025-11-12 19:34:38.453 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:143 -   To: Variational
+2025-11-12 19:34:38.453 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:144 -   Amount: $4752.45
+2025-11-12 19:34:38.453 | INFO     | src.execution.rebalancing:execute_rebalancing:111 - Rebalancing: Extended -> Variational, $4752.45
+2025-11-12 19:34:38.453 | SUCCESS  | src.execution.rebalancing:execute_rebalancing:118 - Rebalancing completed: $4752.45 transferred
+2025-11-12 19:35:17.304 | INFO     | __main__:start:103 - Stopping bot...
+2025-11-12 19:35:17.304 | INFO     | __main__:stop:425 - Bot stopped
+2025-11-12 23:44:10.124 | INFO     | src.main:__init__:68 - Arbitrage Bot initialized
+2025-11-12 23:44:10.125 | INFO     | src.main:__init__:69 - Mode: auto
+2025-11-12 23:44:10.125 | INFO     | src.main:run_auto_cycle:138 - Starting auto cycle - scanning all symbols
+2025-11-12 23:44:11.877 | INFO     | src.data.loris_api:fetch_all_funding_rates:70 - Fetched 1429 symbols from Loris Tools
+2025-11-12 23:44:11.878 | INFO     | src.main:run_auto_cycle:147 - Scanning 1429 symbols from Loris Tools
+2025-11-12 23:44:11.879 | SUCCESS  | src.main:run_auto_cycle:153 - Found 23 opportunities
+2025-11-12 23:44:11.880 | INFO     | src.main:display_top_opportunities:363 - 
+  #  Symbole      Rate 1h    Rate 8h  $/h    Type           Prio
+---  ---------  ---------  ---------  -----  -------------  ------
+  1  AVNT        -0.00059   -0.00026  $5.90  both_negative
+  2  APT         -0.00028   -0.00022  $2.80  both_negative
+  3  ENA         -0.00023   -0.00068  $2.30  both_negative
+  4  BNB         -0.00022   -7e-05    $2.20  both_negative
+  5  BERA         0.0001    -0.00034  $1.43  mixed
+  6  AVAX         0.0001    -0.00033  $1.41  mixed
+  7  ATOM         0.0001    -0.0003   $1.38  mixed
+  8  ETC          0.0001    -0.00024  $1.30  mixed
+  9  FARTCOIN     0.00014    0.0001   $1.27  standard
+ 10  DOT          0.0001    -0.00017  $1.21  mixed
+2025-11-12 23:44:11.881 | SUCCESS  | src.main:display_top_opportunities:367 - 🏆 Best: AVNT - $5.90/h ($44.60 per 8h cycle)
+2025-11-12 23:44:11.881 | INFO     | src.main:run_auto_cycle:168 - Active pairs: 0/5
+2025-11-12 23:44:11.881 | INFO     | src.main:run_auto_cycle:176 - Opening position for AVNT/USDT ($5.90/h)
+2025-11-12 23:44:11.882 | INFO     | src.main:run_auto_cycle:176 - Opening position for APT/USDT ($2.80/h)
+2025-11-12 23:44:11.882 | INFO     | src.main:run_auto_cycle:176 - Opening position for ENA/USDT ($2.30/h)
+2025-11-12 23:44:11.882 | INFO     | src.main:run_auto_cycle:176 - Opening position for BNB/USDT ($2.20/h)
+2025-11-12 23:44:11.882 | INFO     | src.main:run_auto_cycle:176 - Opening position for BERA/USDT ($1.43/h)
+2025-11-12 23:44:11.882 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:141 - Auto-rebalancing triggered
+2025-11-12 23:44:11.883 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:142 -   From: Variational
+2025-11-12 23:44:11.883 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:143 -   To: Extended
+2025-11-12 23:44:11.883 | INFO     | src.execution.rebalancing:auto_rebalance_if_needed:144 -   Amount: $3610.17
+2025-11-12 23:44:11.883 | INFO     | src.execution.rebalancing:execute_rebalancing:111 - Rebalancing: Variational -> Extended, $3610.17
+2025-11-12 23:44:11.884 | SUCCESS  | src.execution.rebalancing:execute_rebalancing:118 - Rebalancing completed: $3610.17 transferred

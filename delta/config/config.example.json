@@ -1,0 +1,51 @@
+{
+  "exchanges": {
+    "extended": {
+      "name": "Extended",
+      "api_key": "YOUR_EXTENDED_API_KEY",
+      "api_secret": "YOUR_EXTENDED_API_SECRET",
+      "funding_interval": 3600,
+      "funding_times": "every hour at :00"
+    },
+    "variational": {
+      "name": "Variational",
+      "api_key": "YOUR_VARIATIONAL_API_KEY",
+      "api_secret": "YOUR_VARIATIONAL_API_SECRET",
+      "funding_intervals": {
+        "BTC": 28800,
+        "ETH": 28800,
+        "default": 28800
+      },
+      "funding_times": "00:00, 08:00, 16:00"
+    }
+  },
+  "trading": {
+    "min_profit_threshold": 0.0001,
+    "max_position_size": 10000,
+    "preferred_margin": 0.2,
+    "max_leverage": 5,
+    "min_leverage": 2,
+    "use_tp_sl": true,
+    "tp_percentage": 0.5,
+    "sl_percentage": 1.0
+  },
+  "arbitrage": {
+    "check_interval": 60,
+    "min_funding_difference": 0.0001,
+    "close_before_variational_funding": 300,
+    "watch_polarity_change": true,
+    "auto_rebalance": true,
+    "rebalance_threshold": 0.1
+  },
+  "monitoring": {
+    "enable_dashboard": true,
+    "dashboard_port": 8050,
+    "enable_alerts": true,
+    "alert_webhook": "",
+    "log_level": "INFO"
+  },
+  "pairs": [
+    "BTC/USDT",
+    "ETH/USDT"
+  ]
+}
