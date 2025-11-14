@@ -1,0 +1,12 @@
+{
+  "wallet": {
+    "address": "YOUR_WALLET_ADDRESS_HERE",
+    "private_key": "YOUR_PRIVATE_KEY_HERE"
+  },
+  "auto_trading": {
+    "enabled": false,
+    "position_size_usd": 100,
+    "max_concurrent_positions": 1,
+    "min_profit_per_snipe": 5.0
+  }
+}
