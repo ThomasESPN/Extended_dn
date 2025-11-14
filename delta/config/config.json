@@ -1,20 +1,24 @@
 {
   "wallet": {
-    "address": "0xYOUR_WALLET_ADDRESS",
-    "private_key": "YOUR_PRIVATE_KEY"
+    "address": "FROM_ENV_WALLET_ADDRESS",
+    "private_key": "FROM_ENV_WALLET_PRIVATE_KEY"
   },
   "exchanges": {
     "extended": {
       "name": "Extended",
-      "api_url": "https://api.extended.finance",
+      "api_key": "FROM_ENV_EXTENDED_API_KEY",
+      "public_key": "FROM_ENV_EXTENDED_PUBLIC_KEY",
+      "private_key": "FROM_ENV_EXTENDED_PRIVATE_KEY",
+      "vault_id": "FROM_ENV_EXTENDED_VAULT_ID",
+      "api_url": "https://api.starknet.extended.exchange/",
       "funding_interval": 3600,
       "funding_times": "every hour at :00"
     },
     "hyperliquid": {
       "name": "Hyperliquid",
       "api_url": "https://api.hyperliquid.xyz",
-      "funding_interval": 3600,
-      "funding_times": "every hour at :00"
+      "funding_interval": 28800,
+      "funding_times": "every 8 hour at :00"
     },
     "variational": {
       "name": "Variational",

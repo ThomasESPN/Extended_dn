@@ -9,6 +9,11 @@ numpy>=1.26.0
 
 # API clients (à adapter selon les exchanges)
 # ccxt>=4.0.0  # Temporairement désactivé (nécessite un compilateur C)
+hyperliquid-python-sdk>=0.20.0  # SDK officiel Hyperliquid
+x10-python-trading-starknet>=0.0.17  # SDK officiel Extended Exchange
+eth-account>=0.8.0  # Pour la signature des transactions
+web3>=6.0.0  # Pour interagir avec les contrats Arbitrum (deposits Hyperliquid)
+aiohttp>=3.9.0  # Pour les requêtes asynchrones (requis par Extended SDK)
 
 # Database
 sqlalchemy==2.0.23
