@@ -8,6 +8,8 @@ import json
 import sys
 import os
 import time
+import websocket
+import threading
 
 # Ajouter le SDK Hyperliquid au path
 SDK_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'hyperliquid-python-sdk-master')
@@ -78,6 +80,13 @@ class HyperliquidAPI:
         
         # Cache pour les métadonnées (leverage max, etc.)
         self.meta_cache = None
+        
+        # WebSocket pour orderbook en temps réel
+        self.ws_app = None  # Instance WebSocketApp
+        self.ws_thread = None
+        self.orderbook_cache = {}  # {coin: {"bid": float, "ask": float, "last_update": float}}
+        self.ws_connected = False
+        self.ws_coin = None  # Coin actuellement connecté
         
         logger.info(f"Hyperliquid API initialized for {wallet_address}")
     
@@ -167,7 +176,7 @@ class HyperliquidAPI:
             True si succès, False sinon
         """
         try:
-            if not self.exchange_client:
+            if not self.exchange:
                 logger.error("Exchange client not available - cannot set leverage")
                 return False
             
@@ -187,7 +196,7 @@ class HyperliquidAPI:
                 return False
             
             # Set leverage via SDK
-            result = self.exchange_client.update_leverage(leverage, symbol, is_cross=True)
+            result = self.exchange.update_leverage(leverage, symbol, is_cross=True)
             
             if result and result.get('status') == 'ok':
                 logger.info(f"✅ Hyperliquid leverage set to {leverage}x for {symbol}")
@@ -202,7 +211,7 @@ class HyperliquidAPI:
     
     def get_ticker(self, symbol: str) -> Optional[Dict]:
         """
-        Récupère les prix bid/ask/last pour un symbole
+        Récupère les prix bid/ask/last pour un symbole via l'orderbook L2
         
         Args:
             symbol: Symbole (ex: "ETH", "BTC")
@@ -211,6 +220,38 @@ class HyperliquidAPI:
             Dict avec {'bid': float, 'ask': float, 'last': float}
         """
         try:
+            # Utiliser l2Book pour obtenir les vrais bid/ask (top 10)
+            payload = {
+                "type": "l2Book",
+                "coin": symbol.upper()
+            }
+            
+            response = requests.post(self.info_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # data est un array [bids, asks]
+            # bids et asks sont des arrays de {px: str, sz: str, n: int}
+            if isinstance(data, list) and len(data) >= 2:
+                bids = data[0]  # Premier élément = bids
+                asks = data[1]  # Deuxième élément = asks
+                
+                if bids and asks:
+                    # Meilleur bid = premier élément (prix le plus élevé)
+                    best_bid = float(bids[0]['px'])
+                    # Meilleur ask = premier élément (prix le plus bas)
+                    best_ask = float(asks[0]['px'])
+                    mid_price = (best_bid + best_ask) / 2
+                    
+                    return {
+                        'bid': best_bid,
+                        'ask': best_ask,
+                        'last': mid_price
+                    }
+            
+            # Fallback sur allMids si l2Book échoue
+            logger.debug(f"l2Book failed for {symbol}, falling back to allMids")
             payload = {
                 "type": "allMids"
             }
@@ -220,7 +261,6 @@ class HyperliquidAPI:
             
             data = response.json()
             
-            # data est un dict {symbol: price_mid}
             if symbol in data:
                 mid_price = float(data[symbol])
                 # Approximation bid/ask avec 0.01% de spread
@@ -658,6 +698,153 @@ class HyperliquidAPI:
         except Exception as e:
             logger.error(f"Error closing position: {e}")
             return False
+
+
+    def ws_orderbook(self, ticker: str):
+        """
+        Se connecte au WebSocket orderbook pour un ticker donné
+        
+        Args:
+            ticker: Symbole du ticker (ex: "ZORA", "BTC", "ETH")
+            
+        Returns:
+            True si la connexion est établie, False sinon
+        """
+        try:
+            # Le ticker est utilisé tel quel pour Hyperliquid (ex: "BTC", "ETH", "ZORA")
+            coin = ticker.upper()
+            
+            # Si déjà connecté au même coin, ne rien faire
+            if self.ws_connected and self.ws_coin == coin and self.ws_app:
+                logger.info(f"WebSocket déjà connecté au coin {coin}")
+                return True
+            
+            # Fermer la connexion précédente si différente
+            if self.ws_app and self.ws_coin != coin:
+                try:
+                    self.ws_app.close()
+                except:
+                    pass
+                self.ws_connected = False
+                self.ws_app = None
+            
+            # URL WebSocket Hyperliquid
+            ws_url = f"{self.api_url.replace('https', 'wss').replace('http', 'ws')}/ws"
+            
+            logger.info(f"🔌 Connexion WebSocket orderbook pour {coin}...")
+            
+            def on_message(ws, message):
+                try:
+                    if message == "Websocket connection established.":
+                        return
+                    
+                    data = json.loads(message)
+                    channel = data.get('channel')
+                    
+                    if channel == 'l2Book':
+                        orderbook_data = data.get('data', {})
+                        msg_coin = orderbook_data.get('coin')
+                        levels = orderbook_data.get('levels', [[], []])
+                        
+                        if msg_coin and len(levels) >= 2:
+                            bids = levels[0]  # Premier tableau = bids
+                            asks = levels[1]  # Deuxième tableau = asks
+                            
+                            if bids and asks:
+                                # Format: [{"px": "25670", "sz": "0.1", "n": 1}, ...]
+                                best_bid = float(bids[0]['px']) if bids else None
+                                best_ask = float(asks[0]['px']) if asks else None
+                                
+                                if best_bid and best_ask:
+                                    self.orderbook_cache[msg_coin] = {
+                                        "bid": best_bid,
+                                        "ask": best_ask,
+                                        "last_update": time.time()
+                                    }
+                except Exception as e:
+                    logger.error(f"Erreur traitement message WebSocket: {e}")
+            
+            def on_error(ws, error):
+                error_str = str(error)
+                logger.error(f"WebSocket error: {error}")
+                self.ws_connected = False
+            
+            def on_close(ws, close_status_code, close_msg):
+                if close_status_code != 1000:
+                    logger.warning(f"WebSocket fermé: {close_status_code} - {close_msg}")
+                self.ws_connected = False
+                self.ws_coin = None
+            
+            def on_open(ws):
+                logger.success(f"✅ WebSocket orderbook connecté pour {coin}")
+                self.ws_connected = True
+                self.ws_coin = coin
+                
+                # Souscrire au l2Book pour ce coin
+                subscription = {
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "l2Book",
+                        "coin": coin
+                    }
+                }
+                ws.send(json.dumps(subscription))
+                logger.info(f"   📡 Souscription l2Book envoyée pour {coin}")
+            
+            def run_websocket():
+                self.ws_app = websocket.WebSocketApp(
+                    ws_url,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close,
+                    on_open=on_open
+                )
+                self.ws_app.run_forever()
+            
+            # Démarrer le websocket dans un thread séparé
+            self.ws_thread = threading.Thread(target=run_websocket, daemon=True)
+            self.ws_thread.start()
+            
+            # Attendre que la connexion s'établisse (jusqu'à 5 secondes)
+            max_wait = 5
+            waited = 0
+            while not self.ws_connected and waited < max_wait:
+                time.sleep(0.5)
+                waited += 0.5
+            
+            if self.ws_connected:
+                logger.success(f"✅ WebSocket orderbook démarré pour {coin}")
+                return True
+            else:
+                logger.error(f"❌ Échec connexion WebSocket pour {coin}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Erreur lors de la connexion WebSocket pour {ticker}: {e}")
+            return False
+    
+    def get_orderbook_data(self, ticker: str) -> Optional[Dict]:
+        """
+        Récupère les données de l'orderbook depuis le cache WebSocket
+        
+        Args:
+            ticker: Symbole du ticker (ex: "ZORA", "BTC", "ETH")
+            
+        Returns:
+            Dict avec {"bid": float, "ask": float} ou None si pas disponible
+        """
+        coin = ticker.upper()
+        
+        if coin in self.orderbook_cache:
+            cache_data = self.orderbook_cache[coin]
+            # Vérifier que les données sont récentes (< 10 secondes)
+            if time.time() - cache_data['last_update'] < 10:
+                return {
+                    "bid": cache_data['bid'],
+                    "ask": cache_data['ask']
+                }
+        
+        return None
 
 
 def test_hyperliquid_connection():

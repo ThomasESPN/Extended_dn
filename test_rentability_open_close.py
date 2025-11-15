@@ -12,15 +12,42 @@ from typing import Dict, Optional
 
 try:
     from loguru import logger
+    # Configurer loguru pour afficher les logs DEBUG (temporaire pour debug WebSocket)
+    logger.remove()  # Retirer le handler par défaut
+    logger.add(sys.stderr, level="DEBUG")  # Ajouter avec niveau DEBUG
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.exchanges.extended_api import ExtendedAPI
 from src.exchanges.hyperliquid_api import HyperliquidAPI
+
+
+def get_ticker_ws(api, symbol: str, exchange_name: str) -> Dict:
+    """
+    Récupère le ticker via WebSocket avec fallback sur API REST
+    
+    Returns:
+        {"bid": float, "ask": float, "last": float}
+    """
+    # Essayer WebSocket d'abord
+    ws_data = api.get_orderbook_data(symbol)
+    
+    if ws_data and ws_data.get('bid') and ws_data.get('ask'):
+        mid = (ws_data['bid'] + ws_data['ask']) / 2
+        logger.debug(f"   📡 {exchange_name} prix WebSocket: bid=${ws_data['bid']:.6f}, ask=${ws_data['ask']:.6f}")
+        return {
+            'bid': ws_data['bid'],
+            'ask': ws_data['ask'],
+            'last': mid
+        }
+    
+    # Fallback sur API REST
+    logger.debug(f"   🔄 {exchange_name} WebSocket indisponible, utilisation API REST")
+    return api.get_ticker(symbol)
 
 
 def get_position_info(extended: ExtendedAPI, hyperliquid: HyperliquidAPI, symbol: str) -> Dict:
@@ -84,27 +111,24 @@ def close_position_maker(extended: ExtendedAPI, hyperliquid: HyperliquidAPI,
     
     # Retry strategy
     max_attempts = 3
-    offsets = [0.0001, 0.0003, 0.001]  # 0.01%, 0.03%, 0.1%
     
     extended_result = None
     hyperliquid_result = None
     
     # ====== EXTENDED CLOSE AVEC RETRY ======
     for attempt in range(max_attempts):
-        offset = offsets[attempt]
-        
-        # Get fresh prices
-        extended_ticker = extended.get_ticker(symbol)
+        # Get fresh prices via WebSocket
+        extended_ticker = get_ticker_ws(extended, symbol, "Extended")
         extended_bid = extended_ticker['bid']
         extended_ask = extended_ticker['ask']
         
-        # Price selon side AVEC OFFSET pour éviter post-only reject
+        # Price selon side : utiliser le 1er niveau (best bid/ask)
         if extended_side.lower() == 'sell':
-            # SELL → ASK + offset (plus cher = MAKER garanti)
-            extended_price = extended_ask * (1 + offset)
+            # SELL → utiliser le meilleur ask (pour fermer un LONG)
+            extended_price = extended_ask
         else:  # buy
-            # BUY → BID - offset (moins cher = MAKER garanti)
-            extended_price = extended_bid * (1 - offset)
+            # BUY → utiliser le meilleur bid (pour fermer un SHORT)
+            extended_price = extended_bid
         
         logger.info(f"\n1️⃣ Extended {extended_side.upper()} {size} {symbol} @ ${extended_price:.6f} (attempt {attempt+1}/{max_attempts})")
         
@@ -128,7 +152,7 @@ def close_position_maker(extended: ExtendedAPI, hyperliquid: HyperliquidAPI,
             if 'post-only' in error_msg or 'post_only' in error_msg:
                 logger.warning(f"   ⚠️ Post-only rejection (attempt {attempt+1})")
                 if attempt < max_attempts - 1:
-                    logger.info(f"   → Retry avec offset {offsets[attempt+1]*100:.3f}%...")
+                    logger.info(f"   → Retry au 1er niveau...")
                     time.sleep(1)
                     continue
             else:
@@ -144,7 +168,7 @@ def close_position_maker(extended: ExtendedAPI, hyperliquid: HyperliquidAPI,
     time.sleep(2)
     
     # ====== HYPERLIQUID CLOSE ======
-    hyperliquid_ticker = hyperliquid.get_ticker(symbol)
+    hyperliquid_ticker = get_ticker_ws(hyperliquid, symbol, "Hyperliquid")
     hyperliquid_bid = hyperliquid_ticker['bid']
     hyperliquid_ask = hyperliquid_ticker['ask']
     
@@ -195,18 +219,18 @@ def close_position_maker(extended: ExtendedAPI, hyperliquid: HyperliquidAPI,
                 extended.cancel_order(extended_result['order_id'])
                 time.sleep(1)
                 
-                # Get fresh prices
-                extended_ticker_new = extended.get_ticker(symbol)
+                # Get fresh prices via WebSocket
+                extended_ticker_new = get_ticker_ws(extended, symbol, "Extended")
                 
-                # Re-place avec offset progressif pour éviter post-only reject
-                retry_offset = 0.0001 * (cycle + 1)  # 0.01%, 0.02%, 0.03%...
-                
+                # Re-place au 1er niveau (best bid/ask)
                 if extended_side.lower() == 'sell':
-                    new_price = extended_ticker_new['ask'] * (1 + retry_offset)
+                    # SELL → utiliser le meilleur ask
+                    new_price = extended_ticker_new['ask']
                 else:
-                    new_price = extended_ticker_new['bid'] * (1 - retry_offset)
+                    # BUY → utiliser le meilleur bid
+                    new_price = extended_ticker_new['bid']
                 
-                logger.info(f"      🔄 Re-place Extended {extended_side.upper()} @ ${new_price:.6f} (offset={retry_offset*100:.2f}%)")
+                logger.info(f"      🔄 Re-place Extended {extended_side.upper()} @ ${new_price:.6f} (1er niveau)")
                 extended_result = extended.place_order(
                     symbol=symbol,
                     side=extended_side,
@@ -273,14 +297,78 @@ def main():
     leverage = 3
     
     # =====================================================================
+    # CONNEXION WEBSOCKETS POUR PRIX TEMPS RÉEL
+    # =====================================================================
+    logger.info(f"\n🔌 Connexion aux WebSockets orderbook pour {symbol}...")
+    
+    extended_ws_success = extended.ws_orderbook(symbol)
+    hyperliquid_ws_success = hyperliquid.ws_orderbook(symbol)
+    
+    if extended_ws_success:
+        logger.success(f"   ✅ Extended WebSocket connecté")
+    else:
+        logger.warning(f"   ⚠️ Extended WebSocket échoué → utilisation API REST")
+    
+    if hyperliquid_ws_success:
+        logger.success(f"   ✅ Hyperliquid WebSocket connecté")
+    else:
+        logger.warning(f"   ⚠️ Hyperliquid WebSocket échoué → utilisation API REST")
+    
+    # Attendre un peu pour recevoir les premières données
+    if extended_ws_success or hyperliquid_ws_success:
+        logger.info(f"   ⏳ Attente des premières données WebSocket...")
+        time.sleep(15)  # Extended peut prendre jusqu'à 15-20 secondes pour envoyer les premières données
+        
+        # Vérifier que les données sont bien reçues
+        max_wait_data = 25  # Attendre jusqu'à 25 secondes pour recevoir des données (Extended peut être lent)
+        waited_data = 0
+        
+        while waited_data < max_wait_data:
+            extended_data = extended.get_orderbook_data(symbol) if extended_ws_success else None
+            hyperliquid_data = hyperliquid.get_orderbook_data(symbol) if hyperliquid_ws_success else None
+            
+            # Vérifier si Extended a des données (priorité car plus lent)
+            if extended_ws_success and extended_data:
+                logger.success(f"   ✅ Extended WebSocket données reçues: bid=${extended_data['bid']:.6f}, ask=${extended_data['ask']:.6f}")
+                # Si Extended a des données, on peut continuer même si Hyperliquid n'en a pas encore
+                if hyperliquid_data:
+                    logger.success(f"   ✅ Hyperliquid WebSocket données reçues: bid=${hyperliquid_data['bid']:.6f}, ask=${hyperliquid_data['ask']:.6f}")
+                elif hyperliquid_ws_success:
+                    logger.warning(f"   ⚠️ Hyperliquid WebSocket pas encore de données, continuons l'attente...")
+                break
+            elif hyperliquid_ws_success and hyperliquid_data:
+                # Hyperliquid a des données mais pas Extended, continuer à attendre Extended
+                logger.info(f"   ⏳ Hyperliquid OK, attente Extended... ({waited_data}s/{max_wait_data}s)")
+            else:
+                # Aucun n'a de données
+                logger.debug(f"   ⏳ Attente données WebSocket... ({waited_data}s/{max_wait_data}s)")
+            
+            time.sleep(1)
+            waited_data += 1
+        
+        # Vérification finale
+        extended_data = extended.get_orderbook_data(symbol) if extended_ws_success else None
+        hyperliquid_data = hyperliquid.get_orderbook_data(symbol) if hyperliquid_ws_success else None
+        
+        if extended_ws_success and not extended_data:
+            logger.warning(f"   ⚠️ Extended WebSocket timeout après {max_wait_data}s, utilisation API REST")
+        elif extended_ws_success and extended_data:
+            logger.success(f"   ✅ Extended WebSocket opérationnel: bid=${extended_data['bid']:.6f}, ask=${extended_data['ask']:.6f}")
+        
+        if hyperliquid_ws_success and not hyperliquid_data:
+            logger.warning(f"   ⚠️ Hyperliquid WebSocket pas de données, utilisation API REST")
+        elif hyperliquid_ws_success and hyperliquid_data:
+            logger.success(f"   ✅ Hyperliquid WebSocket opérationnel: bid=${hyperliquid_data['bid']:.6f}, ask=${hyperliquid_data['ask']:.6f}")
+    
+    # =====================================================================
     # PHASE 1: GET INITIAL STATE
     # =====================================================================
     logger.info(f"\n{'='*100}")
     logger.info(f"📊 PHASE 1: ÉTAT INITIAL")
     logger.info(f"{'='*100}")
     
-    extended_ticker = extended.get_ticker(symbol)
-    hyperliquid_ticker = hyperliquid.get_ticker(symbol)
+    extended_ticker = get_ticker_ws(extended, symbol, "Extended")
+    hyperliquid_ticker = get_ticker_ws(hyperliquid, symbol, "Hyperliquid")
     
     extended_bid_0 = extended_ticker['bid']
     extended_ask_0 = extended_ticker['ask']
@@ -358,10 +446,23 @@ def main():
     # BUY Extended: utiliser BID (prix dans l'orderbook, pas de match immédiat)
     # SELL Hyperliquid: utiliser ASK (prix dans l'orderbook)
     
-    extended_open_price = extended_bid_0  # BUY au BID = MAKER garanti
-    hyperliquid_open_price = hyperliquid_ask_0  # SELL au ASK = MAKER garanti
+    # Configurer le levier x3 pour Extended
+    logger.info(f"\n⚙️ Configuration levier x3 pour Extended...")
+    if not extended.set_leverage(symbol, 3):
+        logger.error(f"   ❌ Échec configuration levier Extended")
+        return
+    logger.success(f"   ✅ Extended levier configuré: 3x")
     
-    logger.info(f"\n1️⃣ Extended LONG {size} {symbol} @ ${extended_open_price:.6f} (BID)")
+    # Récupérer le ticker actuel pour prix le plus récent via WebSocket
+    extended_ticker_current = get_ticker_ws(extended, symbol, "Extended")
+    extended_bid_current = extended_ticker_current['bid']
+    extended_ask_current = extended_ticker_current['ask']
+    extended_mid_current = (extended_bid_current + extended_ask_current) / 2
+    
+    # Pour un LONG (BUY), utiliser le meilleur bid (1er niveau)
+    extended_open_price = extended_bid_current  # Utiliser le 1er niveau (best bid)
+    
+    logger.info(f"\n1️⃣ Extended LONG {size} {symbol} @ ${extended_open_price:.6f} (best bid=${extended_bid_current:.6f}, best ask=${extended_ask_current:.6f})")
     extended_result = extended.place_order(
         symbol=symbol,
         side="buy",
@@ -375,17 +476,132 @@ def main():
         return
     
     extended_real_size = extended_result.get('size', size)
-    logger.success(f"   ✅ Extended OID: {extended_result['order_id']} (size: {extended_real_size})")
+    extended_oid = extended_result['order_id']
+    logger.success(f"   ✅ Extended OID: {extended_oid} (size: {extended_real_size})")
     
-    time.sleep(2)
+    # NOUVELLE STRATÉGIE: Attendre que Extended se fill d'abord, puis placer Hyperliquid
+    logger.info(f"   ⏳ Attente fill Extended (re-place toutes les 10s si nécessaire)...")
     
-    logger.info(f"\n2️⃣ Hyperliquid SHORT {extended_real_size} {symbol} @ ${hyperliquid_open_price:.6f} (ASK)")
+    # Vérification immédiate (l'ordre peut être fill instantanément avec prix agressif)
+    time.sleep(0.5)  # Petit délai pour laisser l'ordre se fill si prix très proche
+    positions_check_immediate = get_position_info(extended, hyperliquid, symbol)
+    extended_position_immediate = positions_check_immediate['extended']
+    
+    # Attendre que Extended se fill avec re-place toutes les 10s
+    max_cycles = 30  # 30 cycles max = ~300s
+    check_interval = 15  # Check toutes les 10s
+    cycle = 0
+    extended_filled = False
+    extended_entry_price = None
+    
+    # Si déjà fill, skip la boucle
+    if extended_position_immediate is not None:
+        extended_filled = True
+        extended_entry_price = extended_position_immediate['entry_price']
+        extended_real_size = extended_position_immediate['size']
+        logger.success(f"   ✅ Extended FILLED IMMÉDIATEMENT! Prix d'entrée: ${extended_entry_price:.6f}, Size: {extended_real_size}")
+    
+    while cycle < max_cycles and not extended_filled:
+        time.sleep(check_interval)
+        cycle += 1
+        
+        logger.info(f"\n   🔄 Cycle {cycle}/{max_cycles} (vérification Extended...)")
+        
+        # Vérifier si Extended est fill
+        positions_check = get_position_info(extended, hyperliquid, symbol)
+        extended_position = positions_check['extended']
+        
+        if extended_position is not None:
+            extended_filled = True
+            extended_entry_price = extended_position['entry_price']
+            extended_real_size = extended_position['size']
+            logger.success(f"   ✅ Extended FILLED! Prix d'entrée: ${extended_entry_price:.6f}, Size: {extended_real_size}")
+            break
+        
+        # Extended pas fill → Cancel + Re-place au prix actuel (optimisé pour vitesse)
+        logger.warning(f"      ⚠️ Extended pas filled → Cancel + Re-place agressif")
+        try:
+            extended.cancel_order(extended_oid)
+            time.sleep(0.3)  # Réduit de 1s à 0.3s pour plus de rapidité
+            
+            # Re-place @ best bid via WebSocket (1er niveau)
+            extended_ticker_new = get_ticker_ws(extended, symbol, "Extended")
+            extended_bid_new = extended_ticker_new['bid']
+            extended_ask_new = extended_ticker_new['ask']
+            extended_mid_new = (extended_bid_new + extended_ask_new) / 2
+            
+            # Utiliser le meilleur bid pour un BUY (LONG) - 1er niveau
+            extended_price_new = extended_bid_new
+            
+            logger.info(f"      🔄 Re-place Extended BUY @ ${extended_price_new:.6f} (best bid: ${extended_bid_new:.6f}, best ask: ${extended_ask_new:.6f})")
+            extended_result_new = extended.place_order(
+                symbol=symbol,
+                side="buy",
+                size=extended_real_size,
+                order_type="limit",
+                price=extended_price_new
+            )
+            
+            if extended_result_new and extended_result_new.get('order_id'):
+                extended_oid = extended_result_new['order_id']
+                logger.success(f"      ✅ Extended re-placed: {extended_oid}")
+            else:
+                logger.error(f"      ❌ Extended re-place failed!")
+        except Exception as e:
+            logger.error(f"      ❌ Extended re-place failed: {e}")
+    
+    if not extended_filled:
+        logger.error(f"\n❌ Timeout: Extended pas fill après {max_cycles} cycles (~{max_cycles * check_interval}s)!")
+        logger.error(f"   → ABORT")
+        return
+    
+    # 2. Extended est fill → Placer Hyperliquid au prix le plus proche possible
+    logger.info(f"\n2️⃣ Hyperliquid SHORT {extended_real_size} {symbol}")
+    logger.info(f"   🎯 Prix d'entrée Extended: ${extended_entry_price:.6f}")
+    
+    # Configurer le levier x3 pour Hyperliquid
+    logger.info(f"\n⚙️ Configuration levier x3 pour Hyperliquid...")
+    if not hyperliquid.set_leverage(symbol, 3):
+        logger.error(f"   ❌ Échec configuration levier Hyperliquid")
+        return
+    logger.success(f"   ✅ Hyperliquid levier configuré: 3x")
+    
+    # Récupérer le ticker Hyperliquid actuel via WebSocket
+    hyperliquid_ticker = get_ticker_ws(hyperliquid, symbol, "Hyperliquid")
+    hyperliquid_bid = hyperliquid_ticker['bid']
+    hyperliquid_ask = hyperliquid_ticker['ask']
+    hyperliquid_mid = (hyperliquid_bid + hyperliquid_ask) / 2
+    
+    # Calculer le prix Hyperliquid le plus proche du prix Extended
+    # Pour un SHORT (SELL), on veut être proche du prix Extended
+    # Si Extended entry > Hyperliquid mid, utiliser ask (plus agressif)
+    # Si Extended entry < Hyperliquid mid, utiliser bid (moins agressif mais MAKER)
+    # Sinon utiliser mid
+    
+    if extended_entry_price > hyperliquid_mid:
+        # Extended plus cher → utiliser ask pour être proche
+        hyperliquid_price = hyperliquid_ask
+        logger.info(f"   📊 Extended entry (${extended_entry_price:.6f}) > Hyperliquid mid (${hyperliquid_mid:.6f})")
+        logger.info(f"   → Utiliser ASK: ${hyperliquid_price:.6f}")
+    elif extended_entry_price < hyperliquid_bid:
+        # Extended moins cher → utiliser bid pour être proche
+        hyperliquid_price = hyperliquid_bid
+        logger.info(f"   📊 Extended entry (${extended_entry_price:.6f}) < Hyperliquid bid (${hyperliquid_bid:.6f})")
+        logger.info(f"   → Utiliser BID: ${hyperliquid_price:.6f}")
+    else:
+        # Entre bid et ask → utiliser mid
+        hyperliquid_price = hyperliquid_mid
+        logger.info(f"   📊 Extended entry (${extended_entry_price:.6f}) entre bid/ask")
+        logger.info(f"   → Utiliser MID: ${hyperliquid_price:.6f}")
+    
+    logger.info(f"   🎯 Prix Hyperliquid: ${hyperliquid_price:.6f} (diff: ${abs(extended_entry_price - hyperliquid_price):.6f})")
+    
     hyperliquid_result = hyperliquid.place_order(
         symbol=symbol,
         side="sell",
         size=extended_real_size,
         order_type="limit",
-        price=hyperliquid_open_price
+        price=hyperliquid_price
     )
     
     if not hyperliquid_result or hyperliquid_result.get('status') != 'ok':
@@ -394,206 +610,38 @@ def main():
     
     logger.success(f"   ✅ Hyperliquid order placed")
     
-    # Check if Hyperliquid filled immediately
-    hyperliquid_filled_immediately = False
-    hyperliquid_oid = None
+    # Vérifier si Hyperliquid est fill immédiatement
     try:
         statuses = hyperliquid_result['response']['data']['statuses']
         if 'filled' in statuses[0]:
-            # FILLED immédiatement!
-            hyperliquid_filled_immediately = True
-            hyperliquid_oid = statuses[0]['filled']['oid']
-            logger.warning(f"\n🚨 Hyperliquid FILLED IMMÉDIATEMENT @ ${statuses[0]['filled']['avgPx']}")
+            hyperliquid_filled_price = float(statuses[0]['filled']['avgPx'])
+            logger.success(f"   ✅ Hyperliquid FILLED IMMÉDIATEMENT @ ${hyperliquid_filled_price:.6f}")
         elif 'resting' in statuses[0]:
             hyperliquid_oid = statuses[0]['resting']['oid']
-            logger.info(f"   Hyperliquid OID: {hyperliquid_oid} (resting)")
-    except Exception as e:
-        logger.warning(f"   ⚠️ Can't extract Hyperliquid OID: {e}")
-    
-    # Si Hyperliquid filled immédiatement, cancel Extended et re-place MAKER
-    if hyperliquid_filled_immediately:
-        logger.warning(f"\n🚨 Hyperliquid filled MAIS Extended pas filled!")
-        logger.warning(f"   → Cancel Extended et attendre que MAKER fill naturellement")
-        logger.warning(f"   ⚠️ PAS DE TAKER! (fees trop élevées)")
-        
-        # Cancel Extended
-        try:
-            extended.cancel_order(extended_result['order_id'])
-            logger.success(f"   ✅ Extended order cancelled")
-        except Exception as e:
-            logger.error(f"   ❌ Cancel failed: {e}")
-        
-        time.sleep(2)
-        
-        # Re-place MAKER Extended avec meilleur prix (BID - small offset pour fill plus vite)
-        extended_ticker_new = extended.get_ticker(symbol)
-        extended_bid_new = extended_ticker_new['bid']
-        extended_ask_new = extended_ticker_new['ask']
-        
-        # BUY @ BID (MAKER garanti, meilleur que mid)
-        extended_price_retry = extended_bid_new
-        
-        logger.info(f"\n� Re-place Extended MAKER BUY @ ${extended_price_retry:.6f}")
-        hedge_result = extended.place_order(
-            symbol=symbol,
-            side="buy",
-            size=extended_real_size,
-            order_type="limit",
-            price=extended_price_retry,
-            post_only=True
-        )
-        
-        if not hedge_result or not hedge_result.get('order_id'):
-            logger.error(f"   ❌ Re-place failed! ABORT")
-            return
-        
-        logger.success(f"   ✅ Extended MAKER re-placed: {hedge_result['order_id']}")
-        logger.info(f"   ⏳ Attente fill naturel (peut prendre 1-2min)...")
-        
-        # Continue avec wait pour que Extended fill
-        extended_oid = hedge_result['order_id']
-    else:
-        # Wait for fills avec SPAM strategy (cancel + re-place si pas filled)
-        logger.info(f"\n⏳ Attente des fills avec SPAM strategy...")
-        logger.warning(f"   🔄 Cancel + Re-place toutes les 10s si pas filled")
-        
-        max_cycles = 10  # 10 cycles max = ~100s
-        check_interval = 10  # Check toutes les 10s
-        cycle = 0
-        
-        positions_start = None
-        extended_oid = extended_result['order_id']
-        
-        # Extract Hyperliquid OID
-        try:
-            statuses = hyperliquid_result['response']['data']['statuses']
-            hyperliquid_oid = statuses[0]['resting']['oid']
-        except:
-            hyperliquid_oid = None
-            logger.warning("   ⚠️ Can't extract Hyperliquid OID")
-        
-        while cycle < max_cycles:
-            time.sleep(check_interval)
-            cycle += 1
+            logger.info(f"   ⏳ Hyperliquid OID: {hyperliquid_oid} (resting)")
+            logger.info(f"   → Attente fill naturel...")
             
-            logger.info(f"\n   🔄 Cycle {cycle}/{max_cycles} (checking fills...)")
-            
-            # Check positions first
+            # Attendre un peu pour voir si ça se fill
+            time.sleep(5)
             positions_check = get_position_info(extended, hyperliquid, symbol)
-            if positions_check['extended'] and positions_check['hyperliquid']:
-                logger.success(f"\n✅ LES DEUX POSITIONS SONT FILLED!")
-                positions_start = positions_check
-                break
-            
-            # Check Extended
-            extended_filled = positions_check['extended'] is not None
-            if not extended_filled:
-                logger.warning(f"      ⚠️ Extended pas filled → Cancel + Re-place")
-                try:
-                    extended.cancel_order(extended_oid)
-                    time.sleep(1)
-                    
-                    # Re-place @ BID exact
-                    extended_ticker_new = extended.get_ticker(symbol)
-                    extended_bid_new = extended_ticker_new['bid']
-                    
-                    logger.info(f"      🔄 Re-place Extended BUY @ ${extended_bid_new:.6f}")
-                    extended_result_new = extended.place_order(
-                        symbol=symbol,
-                        side="buy",
-                        size=extended_real_size,
-                        order_type="limit",
-                        price=extended_bid_new
-                    )
-                    
-                    if extended_result_new and extended_result_new.get('order_id'):
-                        extended_oid = extended_result_new['order_id']
-                        logger.success(f"      ✅ Extended re-placed: {extended_oid}")
-                except Exception as e:
-                    logger.error(f"      ❌ Extended re-place failed: {e}")
-            else:
-                logger.success(f"      ✅ Extended FILLED!")
-            
-            # Check Hyperliquid
-            hyperliquid_filled = positions_check['hyperliquid'] is not None
-            if not hyperliquid_filled and hyperliquid_oid:
-                logger.warning(f"      ⚠️ Hyperliquid pas filled → Cancel + Re-place AGRESSIF")
-                try:
-                    # 1. Cancel l'ordre existant
-                    hl_open = hyperliquid.get_open_orders()
-                    order_exists = any(o.get('oid') == hyperliquid_oid for o in hl_open)
-                    
-                    if order_exists:
-                        logger.info(f"      🗑️ Cancel order {hyperliquid_oid}")
-                        hyperliquid.cancel_order(hyperliquid_oid)
-                        time.sleep(1)
-                    
-                    # 2. Re-place AGRESSIF: ASK - 0.1% pour fill rapidement
-                    hyperliquid_ticker_new = hyperliquid.get_ticker(symbol)
-                    hyperliquid_ask_new = hyperliquid_ticker_new['ask']
-                    hyperliquid_bid_new = hyperliquid_ticker_new['bid']
-                    
-                    # SHORT = SELL plus agressif que ASK (plus proche du BID)
-                    aggressive_price = hyperliquid_ask_new * 0.999  # ASK - 0.1%
-                    
-                    logger.info(f"      🔄 Re-place Hyperliquid SELL @ ${aggressive_price:.6f} (ASK={hyperliquid_ask_new:.6f}, BID={hyperliquid_bid_new:.6f})")
-                    hyperliquid_result_new = hyperliquid.place_order(
-                        symbol=symbol,
-                        side="sell",
-                        size=extended_real_size,
-                        order_type="limit",
-                        price=aggressive_price
-                    )
-                    
-                    if hyperliquid_result_new and hyperliquid_result_new.get('status') == 'ok':
-                        # Extract new OID and check if filled/partial
-                        try:
-                            statuses = hyperliquid_result_new['response']['data']['statuses']
-                            if 'filled' in statuses[0]:
-                                filled_size = float(statuses[0]['filled']['totalSz'])
-                                logger.success(f"      ✅ Hyperliquid FILLED: {filled_size} ZORA")
-                                
-                                # Check si partial fill
-                                if filled_size < extended_real_size * 0.95:  # Si < 95% du target
-                                    remaining = extended_real_size - filled_size
-                                    logger.warning(f"      ⚠️ PARTIAL FILL! Manque {remaining:.1f} ZORA")
-                                    logger.warning(f"      → Re-place le reste en MARKET pour garantir full fill")
-                                    
-                                    time.sleep(1)
-                                    
-                                    # Place le reste en MARKET
-                                    market_result = hyperliquid.place_order(
-                                        symbol=symbol,
-                                        side="sell",
-                                        size=remaining,
-                                        order_type="market",
-                                        price=None
-                                    )
-                                    
-                                    if market_result and market_result.get('status') == 'ok':
-                                        logger.success(f"      ✅ Reste placé en MARKET: {remaining:.1f} ZORA")
-                                    else:
-                                        logger.error(f"      ❌ MARKET order failed!")
-                                else:
-                                    hyperliquid_filled = True
-                                    
-                            elif 'resting' in statuses[0]:
-                                hyperliquid_oid = statuses[0]['resting']['oid']
-                                logger.success(f"      ✅ Hyperliquid re-placed: {hyperliquid_oid}")
-                        except Exception as e:
-                            logger.error(f"      ❌ Error parsing result: {e}")
-                except Exception as e:
-                    logger.error(f"      ❌ Hyperliquid re-place failed: {e}")
-            else:
-                if hyperliquid_filled:
-                    logger.success(f"      ✅ Hyperliquid FILLED!")
-        
-        if not positions_start or not positions_start['extended'] or not positions_start['hyperliquid']:
-            logger.error(f"\n❌ Timeout après {max_cycles} cycles!")
-            logger.error(f"   → ABORT (utilise clean_and_close.py)")
-            return
+            if positions_check['hyperliquid'] is None:
+                logger.warning(f"   ⚠️ Hyperliquid pas encore fill, peut prendre quelques secondes...")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Can't extract Hyperliquid status: {e}")
+    
+    # Vérifier les positions finales
+    positions_start = get_position_info(extended, hyperliquid, symbol)
+    
+    if not positions_start['extended'] or not positions_start['hyperliquid']:
+        logger.error(f"\n❌ Positions incomplètes après placement!")
+        logger.error(f"   Extended: {positions_start['extended']}")
+        logger.error(f"   Hyperliquid: {positions_start['hyperliquid']}")
+        return
     
     logger.success(f"\n✅ Positions ouvertes:")
+    logger.info(f"   Extended: {positions_start['extended']['side']} {positions_start['extended']['size']} @ ${positions_start['extended']['entry_price']:.6f}")
+    logger.info(f"   Hyperliquid: {positions_start['hyperliquid']['side']} {positions_start['hyperliquid']['size']} @ ${positions_start['hyperliquid']['entry_price']:.6f}")
+    
     logger.info(f"   Extended: {positions_start['extended']['side']} {positions_start['extended']['size']} @ ${positions_start['extended']['entry_price']:.6f}")
     logger.info(f"   Hyperliquid: {positions_start['hyperliquid']['side']} {positions_start['hyperliquid']['size']} @ ${positions_start['hyperliquid']['entry_price']:.6f}")
     
@@ -686,9 +734,9 @@ def main():
     logger.info(f"📊 PHASE 6: ANALYSE FINALE")
     logger.info(f"{'='*100}")
     
-    # Get final prices
-    extended_ticker_final = extended.get_ticker(symbol)
-    hyperliquid_ticker_final = hyperliquid.get_ticker(symbol)
+    # Get final prices via WebSocket
+    extended_ticker_final = get_ticker_ws(extended, symbol, "Extended")
+    hyperliquid_ticker_final = get_ticker_ws(hyperliquid, symbol, "Hyperliquid")
     
     extended_mid_final = (extended_ticker_final['bid'] + extended_ticker_final['ask']) / 2
     hyperliquid_mid_final = (hyperliquid_ticker_final['bid'] + hyperliquid_ticker_final['ask']) / 2

@@ -5,6 +5,9 @@ Documentation: https://api-docs.extended.exchange/
 from typing import Optional, Dict, List
 import requests
 import json
+import websocket
+import threading
+import time
 from datetime import datetime
 
 try:
@@ -47,6 +50,13 @@ class ExtendedAPI:
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
+        
+        # WebSocket pour orderbook en temps réel
+        self.ws_app = None  # Instance WebSocketApp (renommé pour éviter conflit avec méthode)
+        self.ws_thread = None
+        self.orderbook_cache = {}  # {market_name: {"bid": float, "ask": float, "last_update": float}}
+        self.ws_connected = False
+        self.ws_market = None  # Market actuellement connecté
         
         logger.info(f"Extended API initialized for {wallet_address}")
     
@@ -262,6 +272,145 @@ class ExtendedAPI:
         except Exception as e:
             logger.error(f"Error closing position: {e}")
             return False
+    
+    def ws_orderbook(self, ticker: str):
+        """
+        Se connecte au WebSocket orderbook pour un ticker donné
+        
+        Args:
+            ticker: Symbole du ticker (ex: "ZORA") qui sera converti en "ZORA-USD"
+            
+        Returns:
+            True si la connexion est établie, False sinon
+        """
+        try:
+            # Convertir le ticker en nom de marché (ex: "ZORA" -> "ZORA-USD")
+            market_name = f"{ticker.upper()}-USD"
+            
+            # Si déjà connecté au même marché, ne rien faire
+            if self.ws_connected and self.ws_market == market_name and self.ws_app:
+                logger.info(f"WebSocket déjà connecté au marché {market_name}")
+                return True
+            
+            # Fermer la connexion précédente si différente
+            if self.ws_app and self.ws_market != market_name:
+                try:
+                    self.ws_app.close()
+                except:
+                    pass
+                self.ws_connected = False
+                self.ws_app = None
+            
+            # URL WebSocket Extended
+            ws_url = f"wss://api.starknet.extended.exchange/stream.extended.exchange/v1/orderbooks/{market_name}?depth=1"
+            
+            logger.info(f"🔌 Connexion WebSocket orderbook pour {market_name}...")
+            
+            def on_message(ws, message):
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get('type')
+                    orderbook_data = data.get('data', {})
+                    
+                    if msg_type in ['SNAPSHOT', 'DELTA']:
+                        market = orderbook_data.get('m')
+                        bids = orderbook_data.get('b', [])
+                        asks = orderbook_data.get('a', [])
+                        
+                        if market and bids and asks:
+                            # Extraire le meilleur bid et ask
+                            best_bid = float(bids[0]['p']) if bids else None
+                            best_ask = float(asks[0]['p']) if asks else None
+                            
+                            if best_bid and best_ask:
+                                self.orderbook_cache[market] = {
+                                    "bid": best_bid,
+                                    "ask": best_ask,
+                                    "last_update": time.time()
+                                }
+                except Exception as e:
+                    logger.error(f"Erreur traitement message WebSocket: {e}")
+            
+            def on_error(ws, error):
+                error_str = str(error)
+                if '403' in error_str or 'Forbidden' in error_str:
+                    logger.warning(f"WebSocket 403 Forbidden pour {market_name}")
+                    self.ws_connected = False
+                else:
+                    logger.error(f"WebSocket error: {error}")
+                    self.ws_connected = False
+            
+            def on_close(ws, close_status_code, close_msg):
+                if close_status_code != 1000:
+                    logger.warning(f"WebSocket fermé: {close_status_code} - {close_msg}")
+                self.ws_connected = False
+                self.ws_market = None
+            
+            def on_open(ws):
+                logger.success(f"✅ WebSocket orderbook connecté pour {market_name}")
+                self.ws_connected = True
+                self.ws_market = market_name
+            
+            def run_websocket():
+                # Headers comme le SDK
+                headers = [
+                    "User-Agent: X10PythonTradingClient/0.0.17"
+                ]
+                
+                self.ws_app = websocket.WebSocketApp(
+                    ws_url,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close,
+                    on_open=on_open,
+                    header=headers
+                )
+                self.ws_app.run_forever()
+            
+            # Démarrer le websocket dans un thread séparé
+            self.ws_thread = threading.Thread(target=run_websocket, daemon=True)
+            self.ws_thread.start()
+            
+            # Attendre que la connexion s'établisse (jusqu'à 5 secondes)
+            max_wait = 5
+            waited = 0
+            while not self.ws_connected and waited < max_wait:
+                time.sleep(0.5)
+                waited += 0.5
+            
+            if self.ws_connected:
+                logger.success(f"✅ WebSocket orderbook démarré pour {market_name}")
+                return True
+            else:
+                logger.error(f"❌ Échec connexion WebSocket pour {market_name}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Erreur lors de la connexion WebSocket pour {ticker}: {e}")
+            return False
+    
+    def get_orderbook_data(self, ticker: str) -> Optional[Dict]:
+        """
+        Récupère les données de l'orderbook depuis le cache WebSocket
+        
+        Args:
+            ticker: Symbole du ticker (ex: "ZORA")
+            
+        Returns:
+            Dict avec {"bid": float, "ask": float} ou None si pas disponible
+        """
+        market_name = f"{ticker.upper()}-USD"
+        
+        if market_name in self.orderbook_cache:
+            cache_data = self.orderbook_cache[market_name]
+            # Vérifier que les données sont récentes (< 10 secondes)
+            if time.time() - cache_data['last_update'] < 10:
+                return {
+                    "bid": cache_data['bid'],
+                    "ask": cache_data['ask']
+                }
+        
+        return None
 
 
 def test_extended_connection():
