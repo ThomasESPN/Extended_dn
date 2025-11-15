@@ -2,11 +2,12 @@
 Hyperliquid API Integration
 Utilise le SDK officiel Hyperliquid avec wallet signing
 """
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import requests
 import json
 import sys
 import os
+import time
 
 # Ajouter le SDK Hyperliquid au path
 SDK_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'hyperliquid-python-sdk-master')
@@ -80,6 +81,42 @@ class HyperliquidAPI:
         
         logger.info(f"Hyperliquid API initialized for {wallet_address}")
     
+    def get_size_decimals(self, symbol: str) -> int:
+        """
+        Récupère le nombre de décimales pour la taille (sz_decimals) d'un symbole
+        
+        Args:
+            symbol: Symbole (ex: "ETH", "BTC", "ZORA")
+            
+        Returns:
+            Nombre de décimales (int), ex: 5 pour ZORA, 3 pour ETH
+        """
+        try:
+            # Charger les métadonnées si pas déjà fait
+            if not self.meta_cache:
+                if self.info_client:
+                    self.meta_cache = self.info_client.meta()
+                else:
+                    payload = {"type": "meta"}
+                    response = requests.post(self.info_url, json=payload, timeout=10)
+                    response.raise_for_status()
+                    self.meta_cache = response.json()
+            
+            # Chercher le symbole dans l'universe
+            universe = self.meta_cache.get("universe", [])
+            for coin_info in universe:
+                if coin_info.get("name") == symbol.upper():
+                    sz_dec = coin_info.get("szDecimals", 4)
+                    logger.info(f"   Hyperliquid {symbol}: {sz_dec} decimals")
+                    return int(sz_dec)
+            
+            logger.warning(f"Symbol {symbol} not found on Hyperliquid, using default 4 decimals")
+            return 4
+            
+        except Exception as e:
+            logger.error(f"Error getting Hyperliquid decimals for {symbol}: {e}")
+            return 4
+
     def get_max_leverage(self, symbol: str) -> int:
         """
         Récupère le levier maximum pour un symbole sur Hyperliquid
@@ -117,6 +154,51 @@ class HyperliquidAPI:
         except Exception as e:
             logger.error(f"Error getting Hyperliquid max leverage for {symbol}: {e}")
             return 50  # Défaut Hyperliquid
+    
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """
+        Configure le levier pour un symbole sur Hyperliquid
+        
+        Args:
+            symbol: Symbole (ex: "ETH", "BTC")
+            leverage: Levier désiré (ex: 3, 5, 10)
+            
+        Returns:
+            True si succès, False sinon
+        """
+        try:
+            if not self.exchange_client:
+                logger.error("Exchange client not available - cannot set leverage")
+                return False
+            
+            # Trouver l'asset index
+            if not self.meta_cache:
+                self.get_max_leverage(symbol)  # Charger le meta_cache
+            
+            universe = self.meta_cache.get("universe", [])
+            asset_index = None
+            for idx, coin_info in enumerate(universe):
+                if coin_info.get("name") == symbol.upper():
+                    asset_index = idx
+                    break
+            
+            if asset_index is None:
+                logger.error(f"Symbol {symbol} not found for set_leverage")
+                return False
+            
+            # Set leverage via SDK
+            result = self.exchange_client.update_leverage(leverage, symbol, is_cross=True)
+            
+            if result and result.get('status') == 'ok':
+                logger.info(f"✅ Hyperliquid leverage set to {leverage}x for {symbol}")
+                return True
+            else:
+                logger.error(f"Failed to set leverage: {result}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error setting Hyperliquid leverage for {symbol}: {e}")
+            return False
     
     def get_ticker(self, symbol: str) -> Optional[Dict]:
         """
@@ -295,18 +377,61 @@ class HyperliquidAPI:
         Annule un ordre
         
         Args:
-            order_id: ID de l'ordre à annuler
+            order_id: ID de l'ordre à annuler (OID)
             
         Returns:
             True si succès
         """
         try:
-            # TODO: Implémenter la signature et l'annulation
-            logger.warning("cancel_order not fully implemented")
-            return False
+            if not self.exchange:
+                logger.error("Hyperliquid SDK not initialized")
+                return False
+            
+            # Get coin index from open orders
+            open_orders = self.get_open_orders()
+            order = next((o for o in open_orders if o['oid'] == order_id), None)
+            
+            if not order:
+                logger.warning(f"Order {order_id} not found in open orders")
+                return False
+            
+            symbol = order['symbol']
+            
+            # Get coin index from meta (universe)
+            coin_index = None
+            if not self.meta_cache:
+                if self.info_client:
+                    self.meta_cache = self.info_client.meta()
+                else:
+                    payload = {"type": "meta"}
+                    response = requests.post(self.info_url, json=payload, timeout=10)
+                    response.raise_for_status()
+                    self.meta_cache = response.json()
+            
+            universe = self.meta_cache.get('universe', [])
+            for i, meta in enumerate(universe):
+                if meta.get('name') == symbol:
+                    coin_index = i
+                    break
+            
+            if coin_index is None:
+                logger.error(f"Can't find coin index for {symbol} in meta")
+                return False
+            
+            # Use SDK to cancel
+            result = self.exchange.cancel(symbol, order_id)
+            
+            if result and result.get('status') == 'ok':
+                logger.success(f"✅ Order {order_id} cancelled")
+                return True
+            else:
+                logger.error(f"Cancel failed: {result}")
+                return False
             
         except Exception as e:
-            logger.error(f"Error canceling order: {e}")
+            logger.error(f"Error canceling order {order_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def get_funding_rate(self, symbol: str) -> Optional[Dict]:
@@ -413,6 +538,89 @@ class HyperliquidAPI:
             
         except Exception as e:
             logger.error(f"Error fetching positions: {e}")
+            return []
+    
+    def get_user_fills(self, limit: int = 100) -> List[Dict]:
+        """
+        Récupère les fills récents de l'utilisateur
+        https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-fills
+        
+        Args:
+            limit: Nombre maximum de fills à récupérer
+            
+        Returns:
+            Liste des fills récents
+        """
+        try:
+            payload = {
+                "type": "userFills",
+                "user": self.wallet_address
+            }
+            
+            response = requests.post(self.info_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            fills = response.json()
+            
+            # Convertir en format standardisé
+            result = []
+            for fill in fills[:limit]:
+                result.append({
+                    'symbol': fill.get('coin', ''),
+                    'side': 'BUY' if fill.get('side', '') == 'B' else 'SELL',
+                    'price': float(fill.get('px', 0)),
+                    'size': float(fill.get('sz', 0)),
+                    'timestamp': int(fill.get('time', 0)),
+                    'fee': float(fill.get('fee', 0)),
+                    'oid': fill.get('oid', 0),
+                    'tid': fill.get('tid', 0),
+                    'crossed': fill.get('crossed', False)
+                })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fetching user fills: {e}")
+            return []
+    
+    def get_open_orders(self) -> List[Dict]:
+        """
+        Récupère les ordres ouverts (resting)
+        https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-open-orders
+        
+        Returns:
+            Liste des ordres ouverts
+        """
+        try:
+            payload = {
+                "type": "openOrders",
+                "user": self.wallet_address
+            }
+            
+            response = requests.post(self.info_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            orders = response.json()
+            
+            # Convertir en format standardisé
+            result = []
+            for order in orders:
+                result.append({
+                    'oid': order.get('oid', 0),
+                    'symbol': order.get('coin', ''),
+                    'side': 'BUY' if order.get('side', '') == 'B' else 'SELL',
+                    'price': float(order.get('limitPx', 0)),
+                    'size': float(order.get('sz', 0)),
+                    'filled_size': float(order.get('szFilled', 0)),
+                    'timestamp': int(order.get('timestamp', 0)),
+                    'order_type': order.get('orderType', ''),
+                    'reduce_only': order.get('reduceOnly', False)
+                })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fetching open orders: {e}")
             return []
     
     def close_position(self, symbol: str, size: float = None) -> bool:

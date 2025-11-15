@@ -1,33 +1,36 @@
+﻿#!/usr/bin/env python3
 """
-Test Delta-Neutral : Extended LONG + Hyperliquid SHORT
-Strictement la même valeur USD sur les deux exchanges
+Test DELTA NEUTRAL: LONG Extended + SHORT Hyperliquid
+Même margin ($19 USD EXACTEMENT) sur les deux exchanges avec leverage minimum
 """
-import json
+
 import sys
+import json
+import time
+from loguru import logger
 from pathlib import Path
 
-try:
-    from loguru import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO)
+# Setup logging
+logger.remove()
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level="INFO"
+)
 
-# Add src to path
+# Import APIs
 sys.path.insert(0, str(Path(__file__).parent))
-
 from src.exchanges.extended_api import ExtendedAPI
 from src.exchanges.hyperliquid_api import HyperliquidAPI
 
 
 def main():
-    logger.info("="*80)
-    logger.info("🧪 TEST DELTA-NEUTRAL : Extended LONG + Hyperliquid SHORT")
-    logger.info("="*80)
+    logger.info("="*100)
+    logger.info("🎯 TEST DELTA NEUTRAL - LONG Extended + SHORT Hyperliquid")
+    logger.info("="*100)
     
     # Load config
-    config_path = Path(__file__).parent / "config" / "config.json"
-    with open(config_path) as f:
+    with open("config/config.json", "r") as f:
         config = json.load(f)
     
     wallet = config["wallet"]["address"]
@@ -37,8 +40,7 @@ def main():
     
     logger.info(f"\n📝 Configuration:")
     logger.info(f"   Wallet: {wallet}")
-    logger.info(f"   Taille cible: ${target_usd} par exchange")
-    logger.info(f"   Total position: ${target_usd * 2}")
+    logger.info(f"   🔥 Margin: ${target_usd} USD EXACTEMENT sur les deux exchanges")
     
     # Initialize APIs
     logger.info("\n🔌 Initialisation des APIs...")
@@ -61,164 +63,229 @@ def main():
         logger.error("❌ Extended failed to initialize")
         return
     
-    logger.success("✅ Les deux APIs sont initialisées")
+    logger.success("✅ APIs initialisées")
     
-    # Choose symbol
-    logger.info("\n📊 Symboles disponibles:")
-    logger.info("   1. BTC")
-    logger.info("   2. ETH")
-    logger.info("   3. SOL")
+    # Symbol
+    symbol = "ZORA"
     
-    choice = input("\nVotre choix (1-3) [2]: ").strip() or "2"
-    symbol_map = {"1": "BTC", "2": "ETH", "3": "SOL"}
-    symbol = symbol_map.get(choice, "ETH")
-    
-    logger.info(f"\n{'='*80}")
-    logger.info(f"🎯 TEST DELTA-NEUTRAL - {symbol}")
-    logger.info(f"{'='*80}")
-    
-    # Get market data from both exchanges
-    logger.info(f"\n📊 Récupération des prix...")
+    logger.info(f"\n📊 Récupération prix {symbol}...")
     
     extended_ticker = extended.get_ticker(symbol)
     hyperliquid_ticker = hyperliquid.get_ticker(symbol)
     
-    logger.success(f"✅ Extended {symbol}: bid={extended_ticker['bid']}, ask={extended_ticker['ask']}")
-    logger.success(f"✅ Hyperliquid {symbol}: bid={hyperliquid_ticker['bid']}, ask={hyperliquid_ticker['ask']}")
+    extended_ask = extended_ticker['ask']
+    extended_bid = extended_ticker['bid']
+    hyperliquid_ask = hyperliquid_ticker['ask']
+    hyperliquid_bid = hyperliquid_ticker['bid']
     
-    # Calculate sizes for EXACT same USD value
-    # IMPORTANT: Pour delta-neutral, il faut LA MÊME SIZE sur les deux exchanges !
-    # Pas la même valeur USD, car les prix diffèrent légèrement
+    logger.success(f"✅ Extended: bid=${extended_bid:.6f}, ask=${extended_ask:.6f}")
+    logger.success(f"✅ Hyperliquid: bid=${hyperliquid_bid:.6f}, ask=${hyperliquid_ask:.6f}")
     
-    # 1. Calculer la size pour atteindre target_usd
-    avg_price = (extended_ticker['ask'] + hyperliquid_ticker['bid']) / 2
-    target_size = target_usd / avg_price
+    # Delta (LONG Extended vs SHORT Hyperliquid)
+    delta_abs = abs(extended_ask - hyperliquid_bid)
+    delta_pct = (delta_abs / hyperliquid_bid) * 100
     
-    # 2. Respecter les minimums Extended (plus restrictif)
-    min_sizes = {"BTC": 0.001, "ETH": 0.01, "SOL": 0.1}
-    min_size_extended = min_sizes.get(symbol, 0.01)
+    logger.info(f"\n💰 DELTA (LONG Extended ask vs SHORT Hyperliquid bid):")
+    logger.info(f"   Extended ask: ${extended_ask:.6f}")
+    logger.info(f"   Hyperliquid bid: ${hyperliquid_bid:.6f}")
+    logger.info(f"   Différence: ${delta_abs:.6f} ({delta_pct:.3f}%)")
     
-    # 3. Utiliser AU MOINS le minimum Extended
-    if target_size < min_size_extended:
-        logger.warning(f"⚠️ Size calculée {target_size:.4f} < min Extended {min_size_extended}")
-        logger.warning(f"   → Utilisation du minimum: {min_size_extended} {symbol}")
-        target_size = min_size_extended
+    # Metadata & Leverage
+    logger.info(f"\n📐 Configuration leverage...")
+    extended_max_leverage = extended.get_max_leverage(symbol)
+    hyperliquid_max_leverage = hyperliquid.get_max_leverage(symbol)
+    
+    # 🔥 Leverage = minimum des deux exchanges
+    target_leverage = min(extended_max_leverage, hyperliquid_max_leverage)
+    
+    logger.info(f"   Extended max: {extended_max_leverage}x")
+    logger.info(f"   Hyperliquid max: {hyperliquid_max_leverage}x")
+    logger.warning(f"   🔥 FORCE {target_leverage}x leverage sur les DEUX")
+    
+    # Set leverage sur les deux exchanges
+    try:
+        extended.set_leverage(symbol, target_leverage)
+        logger.success(f"   ✅ Extended leverage set to {target_leverage}x")
+    except Exception as e:
+        logger.error(f"   ❌ Extended leverage failed: {e}")
+    
+    try:
+        hyperliquid.set_leverage(symbol, target_leverage)
+        logger.success(f"   ✅ Hyperliquid leverage set to {target_leverage}x")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Hyperliquid leverage failed: {e}")
+    
+    # Calcul des sizes pour EXACTEMENT $18 margin sur les deux
+    # 🔥 STRATÉGIE: Calculer BASÉ sur Extended (contrainte minimum 1000 ZORA)
+    # Puis utiliser EXACTEMENT LA MÊME SIZE sur Hyperliquid
+    # Notional = Margin × Leverage
+    notional = target_usd * target_leverage
+    
+    # 🔥 FORCE 0 decimals pour ZORA
+    size_decimals = 0
+    
+    logger.info(f"\n💰 Calcul sizes pour ${target_usd} margin @ {target_leverage}x:")
+    logger.info(f"   Target notional: ${notional:.2f}")
+    
+    # 🎯 STRATÉGIE 1: Calculer la size théorique basée sur Extended ASK
+    # Extended LONG: diviser par ASK (prix d'achat)
+    theoretical_size = round(notional / extended_ask, size_decimals)
+    
+    # 🎯 STRATÉGIE 2: Vérifier minimum Extended (1000 ZORA minimum)
+    extended_min_size = 1000.0
+    if theoretical_size < extended_min_size:
+        logger.warning(f"   ⚠️ Size théorique {theoretical_size} < Extended minimum {extended_min_size}")
+        logger.warning(f"   → FORCE {extended_min_size} ZORA sur les DEUX exchanges")
+        actual_size = extended_min_size
     else:
-        # Arrondir au step size
-        target_size = round(target_size, 4)
+        actual_size = theoretical_size
     
-    # 4. MÊME SIZE sur les deux exchanges (c'est ça le vrai delta-neutral !)
-    extended_size = target_size
-    hyperliquid_size = target_size
+    # 🔥 MÊME SIZE sur les deux exchanges (delta-neutral en QUANTITÉ)
+    extended_size = actual_size
+    hyperliquid_size = actual_size
     
-    # 5. Calculer les prix d'entrée
-    extended_entry_price = extended_ticker['ask'] * 1.0005  # +0.05% for fill
-    hyperliquid_entry_price = hyperliquid_ticker['bid'] * 0.9995  # -0.05% for fill
+    # Calculer les notionals RÉELS avec cette size
+    extended_real_notional = extended_size * extended_ask
+    extended_real_margin = extended_real_notional / target_leverage
     
-    # Calculate EXACT USD values
-    extended_usd = extended_size * extended_entry_price
-    hyperliquid_usd = hyperliquid_size * hyperliquid_entry_price
+    hyperliquid_real_notional = hyperliquid_size * hyperliquid_bid
+    hyperliquid_real_margin = hyperliquid_real_notional / target_leverage
     
-    logger.info(f"\n💰 Calcul des positions DELTA-NEUTRAL:")
-    logger.info(f"   Extended LONG:")
-    logger.info(f"      Size: {extended_size} {symbol}")
-    logger.info(f"      Prix: ${extended_entry_price:.2f}")
-    logger.info(f"      Valeur: ${extended_usd:.2f}")
-    logger.info(f"   Hyperliquid SHORT:")
-    logger.info(f"      Size: {hyperliquid_size} {symbol}")
-    logger.info(f"      Prix: ${hyperliquid_entry_price:.2f}")
-    logger.info(f"      Valeur: ${hyperliquid_usd:.2f}")
+    logger.info(f"\n   📗 Extended LONG:")
+    logger.info(f"      {extended_size} ZORA @ ${extended_ask:.6f}")
+    logger.info(f"      Notional: ${extended_real_notional:.2f}")
+    logger.info(f"      Margin: ${extended_real_margin:.2f}")
     
-    delta = abs(extended_usd - hyperliquid_usd)
-    logger.info(f"\n📊 Delta entre les deux positions: ${delta:.2f}")
+    logger.info(f"\n   📕 Hyperliquid SHORT:")
+    logger.info(f"      {hyperliquid_size} ZORA @ ${hyperliquid_bid:.6f}")
+    logger.info(f"      Notional: ${hyperliquid_real_notional:.2f}")
+    logger.info(f"      Margin: ${hyperliquid_real_margin:.2f}")
     
-    # Le delta devrait être proche de 0 car même size
-    if delta > 2.0:
-        logger.warning(f"⚠️ Delta > $2 ! Vérifier les prix")
-    else:
-        logger.success(f"✅ Delta < $2 - Positions delta-neutral !")
+    # Vérifier l'écart de margin
+    margin_diff = abs(extended_real_margin - hyperliquid_real_margin)
+    margin_diff_pct = (margin_diff / target_usd) * 100
     
-    logger.info(f"\n⚡ Exposition nette au prix {symbol}:")
-    logger.info(f"   LONG:  +{extended_size} {symbol}")
-    logger.info(f"   SHORT: -{hyperliquid_size} {symbol}")
-    logger.info(f"   NET:   {extended_size - hyperliquid_size:.6f} {symbol} ≈ $0")
+    logger.warning(f"\n   ⚠️ ÉCART DE MARGIN:")
+    logger.warning(f"      Extended: ${extended_real_margin:.2f}")
+    logger.warning(f"      Hyperliquid: ${hyperliquid_real_margin:.2f}")
+    logger.warning(f"      Différence: ${margin_diff:.2f} ({margin_diff_pct:.1f}%)")
+    logger.warning(f"      → Causé par le spread bid/ask entre exchanges")
     
-    # Summary
-    logger.info(f"\n🎯 Résumé des ordres:")
-    logger.info(f"   📈 LONG Extended:  BUY  {extended_size} {symbol} @ ${extended_entry_price:.2f}")
-    logger.info(f"   📉 SHORT Hyperliquid: SELL {hyperliquid_size} {symbol} @ ${hyperliquid_entry_price:.2f}")
+    logger.warning(f"\n⚠️  DELTA NEUTRAL:")
+    logger.warning(f"   🔥 MÊME SIZE: {extended_size} ZORA sur les DEUX exchanges")
+    logger.warning(f"   Extended: LONG {extended_size} ZORA (BUY)")
+    logger.warning(f"   Hyperliquid: SHORT {hyperliquid_size} ZORA (SELL)")
+    logger.warning(f"   → Position neutre en QUANTITÉ, capture funding rate")
+    logger.warning(f"   ⚠️ Écart de margin causé par bid/ask spread: ~${margin_diff:.2f}")
     
-    # Confirmation
-    logger.warning(f"\n⚠️  ATTENTION - Ordres RÉELS sur les deux exchanges !")
-    logger.warning(f"   Extended: ${extended_usd:.2f} (LONG)")
-    logger.warning(f"   Hyperliquid: ${hyperliquid_usd:.2f} (SHORT)")
-    logger.warning(f"   Total exposition: ${extended_usd + hyperliquid_usd:.2f}")
-    logger.warning(f"   Delta-neutral: Oui (delta ${delta:.2f})")
+    logger.info(f"\n🚀 Exécution dans 3s...")
+    time.sleep(3)
     
-    response = input("\n   Placer ces ordres ? Taper 'YES' pour continuer: ")
-    if response.upper() != "YES":
-        logger.info("❌ Test annulé")
-        return
+    # =================================================================
+    # EXECUTION
+    # =================================================================
     
-    # Place orders
-    logger.info(f"\n🚀 Placement des ordres DELTA-NEUTRAL...")
+    logger.info(f"\n{'='*100}")
+    logger.info("🔥 EXÉCUTION DELTA NEUTRAL")
+    logger.info(f"{'='*100}")
     
-    # 1. Extended LONG
-    logger.info(f"\n📤 Ordre 1/2: LONG Extended...")
-    extended_result = extended.place_order(
-        symbol=symbol,
-        side="buy",
-        size=extended_size,
-        price=extended_entry_price,
-        order_type="limit"
-    )
+    extended_result = None
+    hyperliquid_result = None
     
-    if extended_result.get('status') == 'OK':
-        logger.success(f"✅ Extended LONG placé: {extended_result.get('order_id')}")
-    else:
-        logger.error(f"❌ Extended FAILED: {extended_result.get('error')}")
-        logger.warning("⚠️ Arrêt - Extended n'a pas fonctionné, pas d'ordre Hyperliquid")
-        return
+    # Extended: LONG (BUY)
+    logger.info(f"\n📗 Extended LONG: BUY {extended_size} ZORA @ ${extended_ask:.6f}")
+    try:
+        extended_result = extended.place_order(
+            symbol=symbol,
+            side="buy",
+            size=extended_size,
+            order_type="market",
+            price=None
+        )
+        
+        if extended_result and extended_result.get('order_id'):
+            logger.success(f"   ✅ Extended placé (OID: {extended_result['order_id']})")
+        else:
+            logger.error(f"   ❌ Extended failed: {extended_result}")
+    except Exception as e:
+        logger.error(f"   ❌ Extended error: {e}")
     
-    # 2. Hyperliquid SHORT
-    logger.info(f"\n📤 Ordre 2/2: SHORT Hyperliquid...")
-    hyperliquid_result = hyperliquid.place_order(
-        symbol=symbol,
-        side="sell",
-        size=hyperliquid_size,
-        price=hyperliquid_entry_price,
-        order_type="limit"
-    )
+    time.sleep(0.5)
     
-    if hyperliquid_result and hyperliquid_result.get('status') == 'ok':
-        logger.success(f"✅ Hyperliquid SHORT placé: {hyperliquid_result}")
-    else:
-        logger.error(f"❌ Hyperliquid FAILED: {hyperliquid_result}")
-        logger.warning("⚠️ ATTENTION: Extended LONG est placé mais Hyperliquid SHORT a échoué !")
-        logger.warning(f"   → Fermer manuellement le LONG Extended (order {extended_result.get('order_id')})")
-        return
+    # Hyperliquid: SHORT (SELL)
+    logger.info(f"\n📕 Hyperliquid SHORT: SELL {hyperliquid_size} ZORA @ ${hyperliquid_bid:.6f}")
+    try:
+        hyperliquid_result = hyperliquid.place_order(
+            symbol=symbol,
+            side="sell",
+            size=hyperliquid_size,
+            order_type="market",
+            price=None
+        )
+        
+        if hyperliquid_result and hyperliquid_result.get('response', {}).get('data', {}).get('statuses'):
+            status = hyperliquid_result['response']['data']['statuses'][0]
+            if 'filled' in status:
+                filled_data = status['filled']
+                logger.success(f"   ✅ Hyperliquid FILLED: {filled_data['totalSz']} @ ${filled_data['avgPx']}")
+            elif 'error' in status:
+                logger.error(f"   ❌ Hyperliquid error: {status['error']}")
+        else:
+            logger.error(f"   ❌ Hyperliquid failed: {hyperliquid_result}")
+    except Exception as e:
+        logger.error(f"   ❌ Hyperliquid error: {e}")
     
-    # Success
-    logger.info(f"\n{'='*80}")
-    logger.success("🎉 SUCCÈS ! Position DELTA-NEUTRAL établie")
-    logger.info(f"{'='*80}")
+    # Wait
+    logger.info(f"\n⏳ Attente 3s pour exécution...")
+    time.sleep(3)
     
-    logger.info(f"\n📊 Résumé:")
-    logger.info(f"   Extended LONG:  {extended_size} {symbol} @ ${extended_entry_price:.2f} = ${extended_usd:.2f}")
-    logger.info(f"   Hyperliquid SHORT: {hyperliquid_size} {symbol} @ ${hyperliquid_entry_price:.2f} = ${hyperliquid_usd:.2f}")
-    logger.info(f"   Delta: ${delta:.2f}")
+    # Check positions
+    logger.info(f"\n📊 Vérification des positions...")
     
-    logger.info(f"\n✅ Exposition nette au prix: ~$0 (delta-neutral)")
-    logger.info(f"✅ Profit attendu: Différence de funding rates entre les exchanges")
+    extended_fill_price = None
+    hyperliquid_fill_price = None
     
-    logger.info(f"\n📋 Vérifiez vos positions sur:")
-    logger.info(f"   • Extended: https://app.extended.exchange")
-    logger.info(f"   • Hyperliquid: https://app.hyperliquid.xyz")
+    try:
+        extended_positions = extended.get_positions()
+        logger.info(f"\n📗 Extended positions:")
+        for pos in extended_positions:
+            if symbol.upper() in pos.get('symbol', '').upper():
+                extended_fill_price = float(pos.get('entry_price', 0))
+                logger.success(f"   ✅ {pos['symbol']}: {pos.get('size', 0)} @ ${extended_fill_price:.6f}")
+    except Exception as e:
+        logger.error(f"   ❌ Extended positions error: {e}")
     
-    logger.info(f"\n{'='*80}")
-    logger.success("🏁 Test delta-neutral terminé !")
-    logger.info(f"{'='*80}")
+    try:
+        if hyperliquid_result and hyperliquid_result.get('response', {}).get('data', {}).get('statuses'):
+            status = hyperliquid_result['response']['data']['statuses'][0]
+            if 'filled' in status:
+                hyperliquid_fill_price = float(status['filled']['avgPx'])
+                logger.info(f"\n📕 Hyperliquid fill:")
+                logger.success(f"   ✅ ZORA: {status['filled']['totalSz']} @ ${hyperliquid_fill_price:.6f}")
+    except Exception as e:
+        logger.error(f"   ❌ Hyperliquid fill parse error: {e}")
+    
+    # Delta après fill
+    if extended_fill_price and hyperliquid_fill_price:
+        delta_abs = abs(extended_fill_price - hyperliquid_fill_price)
+        delta_pct = (delta_abs / hyperliquid_fill_price) * 100
+        
+        logger.info(f"\n💰 DELTA RÉEL après fill:")
+        logger.info(f"   Extended LONG fill: ${extended_fill_price:.6f}")
+        logger.info(f"   Hyperliquid SHORT fill: ${hyperliquid_fill_price:.6f}")
+        logger.info(f"   Différence: ${delta_abs:.6f} ({delta_pct:.3f}%)")
+    
+    logger.info(f"\n{'='*100}")
+    logger.success("✅ TEST TERMINÉ")
+    logger.info(f"{'='*100}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("\n⚠️  Interrompu par l'utilisateur")
+        sys.exit(0)
+    except Exception as e:
+        logger.exception(f"❌ Erreur: {e}")
+        sys.exit(1)

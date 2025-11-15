@@ -140,6 +140,48 @@ class ExtendedAPI:
             {"symbol": "SOL", "name": "SOL-USD", "min_size": 0.1}
         ]
     
+    def get_size_decimals(self, symbol: str) -> int:
+        """
+        Récupère le nombre de décimales pour la taille d'un symbole sur Extended
+        
+        Args:
+            symbol: Symbole (ex: "ETH", "BTC", "ZORA")
+            
+        Returns:
+            Nombre de décimales (int), ex: 5 pour ZORA, 3 pour ETH
+        """
+        if not self.trading_client:
+            return 4  # Défaut
+        
+        try:
+            # Charger les marchés si pas déjà fait
+            if not self.markets_cache:
+                self.get_markets()
+            
+            # Trouver le marché
+            market_name = None
+            for name in self.markets_cache.keys():
+                if symbol.upper() in name:
+                    market_name = name
+                    break
+            
+            if not market_name:
+                logger.warning(f"Market {symbol} not found on Extended, using default 4 decimals")
+                return 4
+            
+            market = self.markets_cache[market_name]
+            # Extended a step_size dans trading_config
+            # Par exemple step_size = 0.001 → 3 decimals, 0.00001 → 5 decimals
+            step_size = float(market.trading_config.step_size)
+            decimals = len(str(step_size).split('.')[-1].rstrip('0'))
+            
+            logger.info(f"   Extended {symbol}: {decimals} decimals (step_size={step_size})")
+            return decimals
+            
+        except Exception as e:
+            logger.error(f"Error getting Extended decimals for {symbol}: {e}")
+            return 4  # Défaut
+
     def get_max_leverage(self, symbol: str) -> int:
         """
         Récupère le levier maximum pour un symbole sur Extended
@@ -178,6 +220,138 @@ class ExtendedAPI:
         except Exception as e:
             logger.error(f"Error getting Extended max leverage for {symbol}: {e}")
             return 10  # Défaut conservateur
+    
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """
+        Configure le levier pour un symbole sur Extended
+        
+        Args:
+            symbol: Symbole (ex: "ETH", "BTC", "ZORA")
+            leverage: Levier désiré (ex: 3, 5, 10)
+            
+        Returns:
+            True si succès, False sinon
+        """
+        if not self.trading_client:
+            logger.error("Trading client not available - cannot set leverage")
+            return False
+        
+        try:
+            from decimal import Decimal
+            
+            # Charger les marchés si pas déjà fait
+            if not self.markets_cache:
+                self.get_markets()
+            
+            # Trouver le nom du marché
+            market_name = None
+            for name in self.markets_cache.keys():
+                if symbol.upper() in name:
+                    market_name = name
+                    break
+            
+            if not market_name:
+                logger.error(f"Market {symbol} not found for set_leverage")
+                return False
+            
+            # Update leverage via SDK (async)
+            async def update_lev_async():
+                result = await self.trading_client.account.update_leverage(
+                    market_name=market_name,
+                    leverage=Decimal(str(leverage))
+                )
+                return result
+            
+            loop = self.get_event_loop()
+            result = loop.run_until_complete(update_lev_async())
+            
+            if result and result.status == "OK":
+                logger.success(f"✅ Extended leverage set to {leverage}x for {symbol}")
+                return True
+            else:
+                logger.error(f"Failed to set Extended leverage: {result}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error setting Extended leverage for {symbol}: {e}")
+            return False
+
+    def round_price(self, symbol: str, price: float) -> float:
+        """
+        Arrondit un prix selon les règles du marché Extended (tick size)
+        
+        Args:
+            symbol: Symbole (ex: "ETH", "BTC", "ZORA")
+            price: Prix à arrondir
+            
+        Returns:
+            Prix arrondi selon le tick_size du marché
+        """
+        if not self.trading_client:
+            return round(price, 2)  # Fallback: 2 decimals
+        
+        try:
+            # Charger les marchés si pas déjà fait
+            if not self.markets_cache:
+                self.get_markets()
+            
+            # Trouver le marché
+            market_name = None
+            for name in self.markets_cache.keys():
+                if symbol.upper() in name:
+                    market_name = name
+                    break
+            
+            if not market_name:
+                logger.warning(f"Market {symbol} not found, using default rounding")
+                return round(price, 2)
+            
+            market = self.markets_cache[market_name]
+            rounded = market.trading_config.round_price(Decimal(str(price)))
+            return float(rounded)
+            
+        except Exception as e:
+            logger.error(f"Error rounding price for {symbol}: {e}")
+            return round(price, 2)
+
+    def get_min_order_size(self, symbol: str) -> float:
+        """
+        Récupère la taille minimale d'ordre pour un symbole sur Extended
+        
+        Args:
+            symbol: Symbole (ex: "ETH", "BTC", "ZORA")
+            
+        Returns:
+            Taille minimale (float)
+        """
+        if not self.trading_client:
+            return 0.01  # Fallback
+        
+        try:
+            # Charger les marchés si pas déjà fait
+            if not self.markets_cache:
+                self.get_markets()
+            
+            # Trouver le marché
+            market_name = None
+            for name in self.markets_cache.keys():
+                if symbol.upper() in name:
+                    market_name = name
+                    break
+            
+            if not market_name:
+                logger.warning(f"Market {symbol} not found, using default min size")
+                return 0.01
+            
+            market = self.markets_cache[market_name]
+            min_size = float(market.trading_config.min_order_size)
+            
+            logger.info(f"   Extended {symbol}: min order size = {min_size}")
+            return min_size
+            
+        except Exception as e:
+            logger.error(f"Error getting min order size for {symbol}: {e}")
+            return 0.01
 
     def get_ticker(self, symbol: str) -> Dict:
         """
@@ -216,6 +390,72 @@ class ExtendedAPI:
         except Exception as e:
             logger.error(f"Error fetching Extended ticker {symbol}: {e}")
             return self._simulate_ticker(symbol)
+    
+    def get_orderbook(self, symbol: str, depth: int = 20) -> Dict:
+        """
+        Récupère l'orderbook real-time pour un symbole
+        
+        Args:
+            symbol: Symbole (ex: "ZORA", "ETH")
+            depth: Nombre de niveaux de prix (default 20)
+            
+        Returns:
+            {"bids": [[price, size], ...], "asks": [[price, size], ...]}
+        """
+        if not self.trading_client:
+            # Simulation
+            ticker = self._simulate_ticker(symbol)
+            return {
+                "bids": [[ticker['bid'], 1000.0]],
+                "asks": [[ticker['ask'], 1000.0]]
+            }
+        
+        try:
+            # Charger les marchés si pas déjà fait
+            if not self.markets_cache:
+                self.get_markets()
+            
+            # Trouver le nom du marché
+            market_name = None
+            for name in self.markets_cache.keys():
+                if symbol.upper() in name:
+                    market_name = name
+                    break
+            
+            if not market_name:
+                logger.warning(f"Market {symbol} not found for orderbook")
+                return {"bids": [], "asks": []}
+            
+            # Récupérer l'orderbook via le SDK
+            from x10.perpetual.orders import OrderSide
+            
+            orderbook = self.trading_client.get_orderbook(market_name, depth=depth)
+            
+            # Parser les bids et asks
+            bids = []
+            asks = []
+            
+            if hasattr(orderbook, 'bids'):
+                for level in orderbook.bids:
+                    bids.append([float(level.price), float(level.size)])
+            
+            if hasattr(orderbook, 'asks'):
+                for level in orderbook.asks:
+                    asks.append([float(level.price), float(level.size)])
+            
+            return {
+                "bids": bids,  # Sorted descending (highest bid first)
+                "asks": asks   # Sorted ascending (lowest ask first)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching Extended orderbook {symbol}: {e}")
+            # Fallback sur ticker
+            ticker = self.get_ticker(symbol)
+            return {
+                "bids": [[ticker['bid'], 1000.0]],
+                "asks": [[ticker['ask'], 1000.0]]
+            }
     
     def _simulate_ticker(self, symbol: str) -> Dict:
         """Simulation de ticker pour tests"""
@@ -321,9 +561,18 @@ class ExtendedAPI:
             rounded_size = market.trading_config.round_order_size(Decimal(str(size)))
             
             # Vérifier que la taille est >= min_order_size
+            # ⚠️ NE PAS forcer le minimum si insuffisant, laisser l'API rejeter
             if rounded_size < market.trading_config.min_order_size:
-                logger.warning(f"Size {rounded_size} < min {market.trading_config.min_order_size}, using minimum")
-                rounded_size = market.trading_config.min_order_size
+                logger.error(f"Size {rounded_size} < min {market.trading_config.min_order_size} - insuffisant pour trader")
+                return {
+                    "order_id": None,
+                    "status": "error",
+                    "error": f"Size {rounded_size} below minimum {market.trading_config.min_order_size}",
+                    "symbol": symbol,
+                    "side": side,
+                    "size": size,
+                    "price": price
+                }
             
             # Arrondir le prix selon les règles du marché
             rounded_price = market.trading_config.round_price(Decimal(str(price)))
@@ -426,6 +675,65 @@ class ExtendedAPI:
             logger.error(f"Error fetching Extended positions: {e}")
             return []
 
+    def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
+        """
+        Récupère les ordres ouverts (pending/resting)
+        
+        Args:
+            symbol: Optionnel, filtre par symbole
+            
+        Returns:
+            Liste d'ordres avec {order_id, symbol, side, size, price, status}
+        """
+        if not self.trading_client:
+            return []
+        
+        try:
+            # 🔥 Extended SDK n'a pas de get_orders(), on doit utiliser get_orders_history avec filter
+            # Pour l'instant, on retourne une liste vide et on checke via get_order_by_id() dans le bot
+            logger.warning("Extended SDK doesn't support listing all open orders - using order_by_id instead")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error fetching Extended open orders: {e}")
+            return []
+    
+    def get_order_status(self, order_id: int) -> Optional[Dict]:
+        """
+        Check le statut d'un ordre spécifique par ID
+        
+        Args:
+            order_id: L'ID de l'ordre
+            
+        Returns:
+            Dict avec {status, filled_size, ...} ou None si erreur
+        """
+        if not self.trading_client:
+            return None
+        
+        try:
+            result = self.get_event_loop().run_until_complete(
+                self.trading_client.account.get_order_by_id(order_id)
+            )
+            
+            if not result or not hasattr(result, 'data'):
+                return None
+            
+            order = result.data
+            return {
+                "order_id": str(order.id),
+                "status": str(order.status).lower(),
+                "symbol": order.market.replace("-USD", ""),
+                "side": str(order.side).lower(),
+                "size": float(order.qty),  # 🔥 qty pas size!
+                "price": float(order.price) if hasattr(order, 'price') else None,
+                "filled_size": float(order.filled_qty) if order.filled_qty else 0  # 🔥 filled_qty!
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching order {order_id} status: {e}")
+            return None
+
     def get_balance(self) -> Dict:
         """Récupère le solde du compte"""
         if not self.trading_client:
@@ -450,7 +758,13 @@ class ExtendedAPI:
         try:
             # Le SDK utilise cancel_order_by_id
             result = self.get_event_loop().run_until_complete(self.trading_client.orders.cancel_order(order_id=order_id))
-            return result.status.value == "OK"
+            
+            # result.status peut être un string ou un enum
+            if isinstance(result.status, str):
+                return result.status == "OK"
+            else:
+                return result.status.value == "OK"
+                
         except Exception as e:
             logger.error(f"Error cancelling Extended order: {e}")
             return False
