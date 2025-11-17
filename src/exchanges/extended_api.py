@@ -846,6 +846,23 @@ class ExtendedAPI:
                 "price": float(rounded_price) if 'rounded_price' in locals() else price,
                 "note": "Order placed but confirmation timeout - check Extended UI"
             }
+        except ValueError as e:
+            # Erreur HTTP de l'API (comme "same side" 1138)
+            error_str = str(e)
+            # Ne pas logger l'erreur complète si c'est une erreur "same side" qui sera gérée
+            if '1138' in error_str or 'same side' in error_str.lower():
+                logger.debug(f"Extended order error (will be handled): {error_str}")
+            else:
+                logger.error(f"Extended order failed: {error_str}")
+            return {
+                "order_id": None,
+                "status": "error",
+                "error": error_str,
+                "symbol": symbol,
+                "side": side,
+                "size": size,
+                "price": price
+            }
         except Exception as e:
             logger.error(f"Extended order failed: {type(e).__name__}: {e}")
             import traceback
@@ -950,13 +967,88 @@ class ExtendedAPI:
         
         try:
             balance = self.get_event_loop().run_until_complete(self.trading_client.account.get_balance())
+            
+            if not balance or not balance.data:
+                return {"total": 0, "available": 0}
+            
+            balance_data = balance.data
+            
+            # Essayer différents attributs possibles selon la version du SDK
+            # Equity (valeur totale du compte)
+            equity = 0.0
+            if hasattr(balance_data, 'equity'):
+                equity = float(balance_data.equity)
+            elif hasattr(balance_data, 'total'):
+                equity = float(balance_data.total)
+            elif hasattr(balance_data, 'total_equity'):
+                equity = float(balance_data.total_equity)
+            
+            # Available balance (solde disponible pour trading)
+            available = 0.0
+            if hasattr(balance_data, 'available_for_withdrawal'):
+                available = float(balance_data.available_for_withdrawal)
+            elif hasattr(balance_data, 'available_balance'):
+                available = float(balance_data.available_balance)
+            elif hasattr(balance_data, 'available_for_trade'):
+                available = float(balance_data.available_for_trade)
+            elif hasattr(balance_data, 'available'):
+                available = float(balance_data.available)
+            elif hasattr(balance_data, 'balance'):
+                available = float(balance_data.balance)
+            elif hasattr(balance_data, 'collateral_balance'):
+                available = float(balance_data.collateral_balance)
+            
+            # Si equity est 0 mais available existe, utiliser available comme total
+            if equity == 0 and available > 0:
+                equity = available
+            
+            # Si tout est 0, essayer d'utiliser directement les valeurs brutes
+            if equity == 0 and available == 0:
+                # Essayer de convertir l'objet en dict ou accéder aux valeurs directement
+                try:
+                    if hasattr(balance_data, '__dict__'):
+                        data_dict = balance_data.__dict__
+                        logger.debug(f"BalanceModel __dict__: {data_dict}")
+                        if 'equity' in data_dict:
+                            equity = float(data_dict['equity'])
+                        if 'available_for_withdrawal' in data_dict:
+                            available = float(data_dict['available_for_withdrawal'])
+                        elif 'available_balance' in data_dict:
+                            available = float(data_dict['available_balance'])
+                except Exception as e:
+                    logger.debug(f"Error accessing __dict__: {e}")
+            
             return {
-                "total": float(balance.data.equity),
-                "available": float(balance.data.available_balance),
+                "total": equity,
+                "available": available,
                 "currency": "USDC"
             }
+        except AttributeError as e:
+            # Erreur spécifique pour les attributs manquants
+            logger.error(f"Error fetching Extended balance - attribut manquant: {e}")
+            # Essayer de récupérer l'objet pour afficher les attributs disponibles
+            try:
+                balance = self.get_event_loop().run_until_complete(self.trading_client.account.get_balance())
+                if balance and balance.data:
+                    attrs = [attr for attr in dir(balance.data) if not attr.startswith('_')]
+                    logger.error(f"BalanceModel attributes disponibles: {attrs}")
+                    # Essayer d'afficher __dict__ si disponible
+                    if hasattr(balance.data, '__dict__'):
+                        logger.error(f"BalanceModel __dict__: {balance.data.__dict__}")
+                    # Essayer d'afficher via vars() aussi
+                    try:
+                        logger.error(f"BalanceModel vars(): {vars(balance.data)}")
+                    except:
+                        pass
+            except Exception as e2:
+                logger.debug(f"Impossible d'afficher les attributs: {e2}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return {"total": 0, "available": 0}
         except Exception as e:
             logger.error(f"Error fetching Extended balance: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return {"total": 0, "available": 0}
 
     def cancel_order(self, order_id: str) -> bool:

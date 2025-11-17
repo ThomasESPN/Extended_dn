@@ -532,19 +532,73 @@ class RebalancingManager:
                     
                     # Étape 3: Confirmer le devis
                     logger.debug("Step 3: Committing bridge quote...")
-                    await trading_client.account.commit_bridge_quote(quote.id)
+                    commit_response = await trading_client.account.commit_bridge_quote(quote.id)
+                    if commit_response and commit_response.status != "OK":
+                        logger.warning(f"Bridge quote commit response: {commit_response.status}")
                     logger.info(f"Bridge quote committed: {quote.id}")
                     
+                    # Vérifier que le quote est valide avant de continuer
+                    if not quote.id:
+                        raise ValueError("Quote ID is empty or invalid")
+                    
+                    # Attendre un peu pour s'assurer que le commit est bien traité
+                    await asyncio.sleep(1)
+                    
+                    logger.info(f"Quote ID to use: {quote.id}")
+                    logger.info(f"Amount to withdraw: {amount_decimal} USD")
+                    logger.info(f"Chain ID: ARB (Arbitrum)")
+                    
+                    # Vérifier le solde disponible avant le retrait
+                    try:
+                        balance_response = await trading_client.account.get_balance()
+                        if balance_response and balance_response.data:
+                            available = float(balance_response.data.available_for_withdrawal) if hasattr(balance_response.data, 'available_for_withdrawal') else 0
+                            if available < float(amount):
+                                logger.warning(f"⚠️  Solde disponible: ${available:.2f}, montant demandé: ${amount:.2f}")
+                    except Exception as e:
+                        logger.debug(f"Could not check balance before withdrawal: {e}")
+                    
                     # Étape 4: Effectuer le retrait avec le quote_id
-                    logger.debug("Step 4: Submitting withdrawal...")
-                    withdrawal_response = await trading_client.account.withdraw(
-                        amount=amount_decimal,
-                        chain_id="ARB",  # Arbitrum
-                        quote_id=quote.id
-                    )
+                    logger.debug("Step 4: Submitting withdrawal with quote_id...")
+                    try:
+                        # Vérifier que le montant est valide (doit être > 0 et raisonnable)
+                        if amount_decimal <= 0:
+                            raise ValueError(f"Invalid withdrawal amount: {amount_decimal}")
+                        
+                        # Le SDK devrait gérer la signature automatiquement
+                        withdrawal_response = await trading_client.account.withdraw(
+                            amount=amount_decimal,
+                            chain_id="ARB",  # Arbitrum (pas "STRK" pour les retraits EVM)
+                            quote_id=quote.id
+                        )
+                    except ValueError as e:
+                        # Capturer les erreurs 500 et autres erreurs HTTP
+                        error_str = str(e)
+                        logger.error(f"❌ Erreur lors du retrait: {error_str}")
+                        
+                        if '500' in error_str or 'Internal Server Error' in error_str:
+                            logger.error("   Erreur serveur Extended (500) détectée")
+                            logger.error("   Causes possibles:")
+                            logger.error("   - Problème temporaire du serveur Extended")
+                            logger.error("   - Quote ID expiré ou invalide")
+                            logger.error("   - Montant invalide ou fonds insuffisants")
+                            logger.error("   - Bridge Extended temporairement indisponible")
+                            logger.error(f"   Quote ID utilisé: {quote.id}")
+                            logger.error(f"   Montant: {amount_decimal} USD")
+                            raise ValueError(f"Erreur serveur Extended (500): {error_str}")
+                        elif '1006' in error_str:
+                            logger.error("   Code d'erreur Extended 1006 (Internal Server Error)")
+                            logger.error("   Le serveur Extended rencontre un problème interne")
+                            logger.error("   Suggestions:")
+                            logger.error("   - Réessayez dans quelques minutes")
+                            logger.error("   - Vérifiez le statut du bridge Extended")
+                            logger.error("   - Contactez le support Extended si le problème persiste")
+                            raise ValueError(f"Erreur Extended 1006: {error_str}")
+                        else:
+                            raise
                     
                     if not withdrawal_response or withdrawal_response.data is None:
-                        raise ValueError("Failed to submit withdrawal")
+                        raise ValueError("Failed to submit withdrawal - no data returned")
                     
                     withdrawal_id = withdrawal_response.data
                     logger.success(f"Withdrawal submitted successfully: ID={withdrawal_id}")

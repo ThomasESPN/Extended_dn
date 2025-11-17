@@ -1,0 +1,11 @@
+{
+    "symbol": "BTC",
+    "leverage": 20,
+    "margin": 20,
+    "min_duration": 1,
+    "max_duration": 1,
+    "num_cycles": 2,
+    "delay_between_cycles": 0,
+    "rebalance_threshold": 10.0
+}
+
