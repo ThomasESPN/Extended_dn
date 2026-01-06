@@ -1,11 +1,16 @@
 {
     "symbol": "BTC",
-    "leverage": 20,
-    "margin": 20,
-    "min_duration": 1,
-    "max_duration": 1,
-    "num_cycles": 2,
-    "delay_between_cycles": 0,
-    "rebalance_threshold": 10.0
+    "leverage": 40,
+    "margin": 3000,
+    "min_duration": 10,
+    "max_duration": 12,
+    "num_cycles": 20,
+    "delay_between_cycles": 1,
+    "rebalance_threshold": 700.0,
+    "pnl_check_delay": 10,
+    "minimal_pnl": 0,
+    "order_mode": "market",
+    "limit_order_timeout": 20,
+    "withdraw_to_extended": false
 }
 

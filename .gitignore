@@ -104,3 +104,7 @@ Thumbs.db
 .DS_Store
 desktop.ini
 
+# Fichiers de bot spécifiques
+dnfarming.py
+dn_limit.py
+
