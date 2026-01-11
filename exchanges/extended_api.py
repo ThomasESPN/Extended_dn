@@ -380,7 +380,7 @@ class ExtendedAPI:
         
         Args:
             symbol: Symbole (ex: "ETH", "BTC")
-            
+        
         Returns:
             Max leverage (int), ex: 10, 3, 20
         """
@@ -475,7 +475,7 @@ class ExtendedAPI:
         Args:
             symbol: Symbole (ex: "ETH", "BTC", "ZORA")
             price: Prix à arrondir
-            
+        
         Returns:
             Prix arrondi selon le tick_size du marché
         """
@@ -505,14 +505,14 @@ class ExtendedAPI:
         except Exception as e:
             logger.error(f"Error rounding price for {symbol}: {e}")
             return round(price, 2)
-
+    
     def get_min_order_size(self, symbol: str) -> float:
         """
         Récupère la taille minimale d'ordre pour un symbole sur Extended
         
         Args:
             symbol: Symbole (ex: "ETH", "BTC", "ZORA")
-            
+        
         Returns:
             Taille minimale (float)
         """
@@ -717,7 +717,7 @@ class ExtendedAPI:
             order_type: "limit" ou "market"
             reduce_only: True pour close only
             post_only: True pour ordres maker uniquement (rejette si taker)
-        
+            
         Returns:
             Dict avec order_id et status
         """
@@ -785,7 +785,7 @@ class ExtendedAPI:
                             "side": side,
                             "size": size
                         }
-                else:
+                else:  # sell
                     if mark_price:
                         price = mark_price * 0.995  # -0.5% du mark price (réduit de 1%)
                         logger.info(f"   Market SELL: using mark - 0.5% = ${price:.2f} (mark=${mark_price:.2f})")
@@ -1061,7 +1061,7 @@ class ExtendedAPI:
         """
         if not self.trading_client:
             return None
-        
+    
         try:
             # Utiliser requests directement au lieu du SDK
             import requests
@@ -1239,7 +1239,7 @@ class ExtendedAPI:
                 logger.warning(f"⚠️  Annulation Extended {order_id_int} échouée: {result.status}")
             
             return success
-                
+            
         except Exception as e:
             logger.error(f"Error cancelling Extended order: {e}")
             return False
@@ -1891,10 +1891,10 @@ class ExtendedAPI:
                     self.ws_mark_price(ticker)
             
             return None
-            
+
         except Exception as e:
             logger.debug(f"Erreur récupération mark price depuis cache: {e}")
-        return None
+            return None
     
     def get_account_updates(self) -> Dict:
         """

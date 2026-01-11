@@ -520,6 +520,50 @@ class DNLighterExtended:
         logger.info("="*60)
         
         try:
+            # VÉRIFICATION PRÉALABLE: Vérifier si des positions sont déjà ouvertes
+            logger.info("🔍 Vérification des positions existantes...")
+            extended_positions_check = self.extended_client.get_positions()
+            extended_pos_existing = next((p for p in extended_positions_check if p['symbol'] == symbol), None)
+            
+            lighter_positions_check = self.lighter_client.get_positions()
+            lighter_pos_existing = next((p for p in lighter_positions_check if p.get('symbol') == symbol), None)
+            
+            if extended_pos_existing or lighter_pos_existing:
+                logger.warning("⚠️  Positions déjà ouvertes détectées!")
+                if extended_pos_existing:
+                    ext_size = abs(float(extended_pos_existing.get('size', 0)))
+                    ext_side = extended_pos_existing.get('side', 'UNKNOWN')
+                    logger.warning(f"   Extended: {ext_side} {ext_size:.6f} {symbol}")
+                if lighter_pos_existing:
+                    light_size_signed = float(lighter_pos_existing.get('size_signed', 0))
+                    light_size = abs(light_size_signed) if light_size_signed != 0 else abs(float(lighter_pos_existing.get('size', 0)))
+                    light_side = "LONG" if light_size_signed > 0 else "SHORT" if light_size_signed < 0 else lighter_pos_existing.get('side', 'UNKNOWN')
+                    logger.warning(f"   Lighter: {light_side} {light_size:.6f} {symbol}")
+                
+                logger.warning("   Fermeture des positions existantes avant de continuer...")
+                close_success = self.close_positions(symbol)
+                
+                if not close_success:
+                    logger.error("❌ Échec fermeture des positions existantes")
+                    return (False, None, None)
+                
+                logger.success("✅ Positions existantes fermées")
+                logger.info("⏳ Attente de 5 secondes pour confirmation...")
+                time.sleep(5)  # Attendre que les positions soient bien fermées
+                
+                # Vérifier à nouveau que les positions sont bien fermées
+                extended_positions_verify = self.extended_client.get_positions()
+                extended_pos_verify = next((p for p in extended_positions_verify if p['symbol'] == symbol), None)
+                
+                lighter_positions_verify = self.lighter_client.get_positions()
+                lighter_pos_verify = next((p for p in lighter_positions_verify if p.get('symbol') == symbol), None)
+                
+                if extended_pos_verify or lighter_pos_verify:
+                    logger.error("❌ Des positions sont toujours ouvertes après fermeture")
+                    return (False, None, None)
+                
+                logger.success("✅ Vérification: Aucune position ouverte, on peut continuer")
+            
             # ÉTAPE 1: Récupérer les prix
             logger.info("Étape 1: Récupération des prix...")
             extended_ticker = self.extended_client.get_ticker(symbol)
@@ -607,23 +651,41 @@ class DNLighterExtended:
             if extended_external_id:
                 logger.debug(f"   External ID: {extended_external_id}")
             
-            # ÉTAPE 4.5: Vérifier que l'ordre est bien accepté via WebSocket
+            # ÉTAPE 4.5: Vérifier que l'ordre est bien accepté via WebSocket OU s'il a été fill immédiatement
             logger.info("🔍 Vérification de l'ordre via WebSocket...")
-            time.sleep(2)  # Attendre 2s que l'ordre soit enregistré
+            time.sleep(2)  # Attendre 2s que l'ordre soit enregistré ou fill
             
-            # Utiliser le WebSocket account pour vérifier le statut
-            account_updates = self.extended_client.get_account_updates()
-            orders_cache = account_updates.get('orders', [])
-            order_confirmed = any(
-                o.get('id') == extended_order_id and o.get('status') in ['NEW', 'UNTRIGGERED']
-                for o in orders_cache
-            )
+            # Vérifier d'abord si l'ordre a été fill immédiatement (position créée)
+            extended_positions_check = self.extended_client.get_positions()
+            extended_pos_check = next((p for p in extended_positions_check if p['symbol'] == symbol), None)
+            order_filled_immediately = False
             
-            # Si ordre rejeté, réessayer avec le bid/ask exact (même agressivité que le premier ordre)
+            if extended_pos_check:
+                filled_size_check = abs(float(extended_pos_check.get('size', 0)))
+                if filled_size_check >= extended_size * 0.90:  # 90% fill minimum
+                    order_filled_immediately = True
+                    logger.success(f"✅ Ordre Extended FILL IMMÉDIATEMENT détecté: {filled_size_check:.6f} {symbol}")
+                    # Passer directement à l'étape 6 (placement Lighter)
+                    # On va sortir de cette section et continuer avec le placement Lighter
+            
+            # Si l'ordre n'a pas été fill immédiatement, vérifier s'il est dans l'orderbook
+            if not order_filled_immediately:
+                # Utiliser le WebSocket account pour vérifier le statut
+                account_updates = self.extended_client.get_account_updates()
+                orders_cache = account_updates.get('orders', [])
+                order_confirmed = any(
+                    o.get('id') == extended_order_id and o.get('status') in ['NEW', 'UNTRIGGERED', 'PARTIALLY_FILLED']
+                    for o in orders_cache
+                )
+            else:
+                # Ordre fill immédiatement, on considère qu'il est confirmé
+                order_confirmed = True
+            
+            # Si ordre rejeté (pas fill et pas dans l'orderbook), réessayer avec le bid/ask exact
             attempt = 1
             max_attempts = 5
             
-            while not order_confirmed and attempt < max_attempts:
+            while not order_confirmed and not order_filled_immediately and attempt < max_attempts:
                 logger.warning(f"⚠️  Ordre rejeté (post-only failed)")
                 logger.info(f"🔄 Tentative {attempt+1}/{max_attempts}: réessai au bid/ask exact...")
                 
@@ -665,170 +727,233 @@ class DNLighterExtended:
                 extended_order_id = extended_result.get('order_id')
                 logger.success(f"✅ Ordre LIMIT placé (tentative {attempt+1}): {extended_order_id}")
                 
-                # Vérifier si cet ordre est accepté via WebSocket
+                # Vérifier si cet ordre est accepté via WebSocket OU s'il a été fill immédiatement
                 time.sleep(2)
-                account_updates = self.extended_client.get_account_updates()
-                orders_cache = account_updates.get('orders', [])
-                order_confirmed = any(
-                    o.get('id') == extended_order_id and o.get('status') in ['NEW', 'UNTRIGGERED']
-                    for o in orders_cache
-                )
                 
-                if order_confirmed:
-                    logger.success(f"✅ Ordre confirmé dans l'orderbook (prix: ${limit_price:.2f})")
-                    break
+                # Vérifier d'abord si l'ordre a été fill immédiatement
+                extended_positions_retry = self.extended_client.get_positions()
+                extended_pos_retry = next((p for p in extended_positions_retry if p['symbol'] == symbol), None)
                 
-                attempt += 1
-            
-            if not order_confirmed:
-                logger.error("❌ Impossible de placer un ordre LIMIT accepté après 5 tentatives")
-                logger.error("❌ Le bot reste en mode LIMIT et ne basculera pas en MARKET")
-                return (False, None, None)
-            
-            logger.info(f"⏳ Attente du fill avec suivi du marché en temps réel (sans timeout, jusqu'au fill)...")
-            
-            # ÉTAPE 5: Attendre que l'ordre soit fill avec suivi dynamique du prix
-            # Pas de timeout ni de limite de tentatives - le bot continue jusqu'au fill
-            fill_attempt = 0
-            filled = False
-            current_order_id = extended_order_id
-            current_limit_price = limit_price
-            start_time = time.time()
-            check_interval = 1  # Vérifier le prix toutes les 1 seconde (plus rapide pour détecter le fill)
-            
-            # Boucle infinie jusqu'au fill (s'arrête seulement si l'ordre est fill ou Ctrl+C)
-            while not filled:
-                # Vérifier d'abord si l'ordre est fill (priorité absolue)
-                extended_positions = self.extended_client.get_positions()
-                extended_pos = next((p for p in extended_positions if p['symbol'] == symbol), None)
-                
-                if extended_pos:
-                    filled_size = abs(float(extended_pos.get('size', 0)))
-                    if filled_size >= extended_size * 0.90:  # 90% fill minimum (plus permissif)
-                        filled = True
-                        logger.success(f"✅ Ordre Extended FILL détecté: {filled_size:.6f} {symbol}")
+                if extended_pos_retry:
+                    filled_size_retry = abs(float(extended_pos_retry.get('size', 0)))
+                    if filled_size_retry >= extended_size * 0.90:
+                        order_filled_immediately = True
+                        order_confirmed = True
+                        logger.success(f"✅ Ordre Extended FILL IMMÉDIATEMENT (tentative {attempt+1}): {filled_size_retry:.6f} {symbol}")
                         break
                 
-                # Vérifier aussi via les ordres ouverts (si l'ordre n'est plus dans l'orderbook, il est peut-être fill)
-                try:
+                # Si pas fill, vérifier s'il est dans l'orderbook
+                if not order_filled_immediately:
                     account_updates = self.extended_client.get_account_updates()
                     orders_cache = account_updates.get('orders', [])
-                    current_order_exists = any(
-                        o.get('id') == current_order_id and o.get('status') in ['NEW', 'UNTRIGGERED', 'PARTIALLY_FILLED']
+                    order_confirmed = any(
+                        o.get('id') == extended_order_id and o.get('status') in ['NEW', 'UNTRIGGERED', 'PARTIALLY_FILLED']
                         for o in orders_cache
                     )
                     
-                    # Si l'ordre n'existe plus dans l'orderbook et qu'on a une position, c'est fill
-                    if not current_order_exists and extended_pos:
-                        filled_size = abs(float(extended_pos.get('size', 0)))
-                        if filled_size > 0:
-                            filled = True
-                            logger.success(f"✅ Ordre Extended FILL (ordre disparu de l'orderbook): {filled_size:.6f} {symbol}")
-                            break
-                except:
-                    pass  # Ignorer les erreurs de vérification
-                
-                time.sleep(check_interval)
-                
-                # Récupérer les prix actuels du marché directement depuis le cache WebSocket (plus rapide)
-                orderbook_data = self.extended_client.get_orderbook_data(symbol)
-                if orderbook_data:
-                    ext_bid_current = float(orderbook_data.get('bid', 0))
-                    ext_ask_current = float(orderbook_data.get('ask', 0))
-                else:
-                    # Fallback sur get_ticker si WebSocket pas disponible
-                    extended_ticker_current = self.extended_client.get_ticker(symbol)
-                    ext_bid_current = float(extended_ticker_current.get('bid', 0))
-                    ext_ask_current = float(extended_ticker_current.get('ask', 0))
-                
-                # Déterminer le prix cible actuel (bid pour BUY, ask pour SELL)
-                if extended_side == "buy":
-                    target_price = ext_bid_current
-                    price_diff = abs(target_price - current_limit_price)
-                    price_diff_pct = (price_diff / current_limit_price) * 100 if current_limit_price > 0 else 0
-                else:  # sell
-                    target_price = ext_ask_current
-                    price_diff = abs(target_price - current_limit_price)
-                    price_diff_pct = (price_diff / current_limit_price) * 100 if current_limit_price > 0 else 0
-                
-                elapsed = int(time.time() - start_time)
-                print(f"\r⏳ Ordre @ ${current_limit_price:.2f} | Marché @ ${target_price:.2f} | Écart: ${price_diff:.2f} ({price_diff_pct:.3f}%) | {elapsed}s", end="", flush=True)
-                
-                # VÉRIFICATION CRITIQUE: Vérifier le fill AVANT de réajuster l'ordre
-                extended_positions_check = self.extended_client.get_positions()
-                extended_pos_check = next((p for p in extended_positions_check if p['symbol'] == symbol), None)
-                if extended_pos_check:
-                    filled_size_check = abs(float(extended_pos_check.get('size', 0)))
-                    if filled_size_check >= extended_size * 0.90:
-                        filled = True
-                        print()  # Nouvelle ligne
-                        logger.success(f"✅ Ordre Extended FILL détecté avant réajustement: {filled_size_check:.6f} {symbol}")
+                    if order_confirmed:
+                        logger.success(f"✅ Ordre confirmé dans l'orderbook (prix: ${limit_price:.2f})")
                         break
                 
-                # Réajuster l'ordre si le bid/ask a changé
-                # On remplace dès que le prix du marché diffère de l'ordre (tolérance de $0.10 pour éviter les micro-ajustements)
-                # Cela garantit que l'ordre reste toujours au meilleur bid/ask exact
-                price_changed = abs(target_price - current_limit_price) > 0.10  # Tolérance de $0.10 pour éviter les micro-ajustements
+                attempt += 1
+            
+            # Si l'ordre a été fill immédiatement, on sort directement pour placer l'ordre Lighter
+            if order_filled_immediately:
+                logger.info(f"⏳ Ordre Extended déjà fill, passage direct au placement Lighter...")
+                # Passer directement à l'étape 6 (placement Lighter)
+                filled = True
+                # Initialiser les variables pour éviter les erreurs
+                fill_attempt = 0
+                start_time = time.time()
+                # On va sauter la boucle de suivi du fill
+            elif not order_confirmed:
+                logger.error("❌ Impossible de placer un ordre LIMIT accepté après 5 tentatives")
+                logger.error("❌ Le bot reste en mode LIMIT et ne basculera pas en MARKET")
+                return (False, None, None)
+            else:
+                logger.info(f"⏳ Attente du fill avec suivi du marché en temps réel (sans timeout, jusqu'au fill)...")
+                logger.info(f"   Stratégie: délai initial 12s, tolérance adaptative 0.05%, toujours au bid/ask exact")
                 
-                # Si le bid/ask a changé, réajuster (mais seulement si pas déjà fill)
-                if price_changed and not filled:  # Remplace dès que le bid/ask change (même légèrement)
-                    print()  # Nouvelle ligne
-                    fill_attempt += 1
-                    logger.info(f"\n🔄 Prix marché éloigné (écart: ${price_diff:.2f}, {price_diff_pct:.3f}%) - Réajustement #{fill_attempt}")
-                    logger.info(f"   Ordre actuel: ${current_limit_price:.2f} | Marché: ${target_price:.2f}")
-                    logger.info("🗑️  Annulation de l'ordre Extended...")
+                # ÉTAPE 5: Attendre que l'ordre soit fill avec suivi dynamique du prix optimisé
+                # Stratégie: délai initial + tolérance adaptative + toujours bid/ask exact
+                fill_attempt = 0
+                filled = False
+                current_order_id = extended_order_id
+                current_limit_price = limit_price
+                start_time = time.time()
+                check_interval = 1  # Vérifier le prix toutes les 1 seconde
+                last_adjustment_time = start_time  # Temps du dernier réajustement
+            
+                # Paramètres de la stratégie optimisée
+                INITIAL_DELAY = 12  # Délai initial avant le premier réajustement (secondes)
+                TOLERANCE_PCT = 0.05  # Tolérance adaptative: 0.05% du prix
+                MIN_ADJUSTMENT_INTERVAL = 5  # Délai minimum entre réajustements (secondes)
+                
+                # Calculer la tolérance en dollars basée sur le prix
+                price_tolerance = current_limit_price * (TOLERANCE_PCT / 100)
+                
+                # Boucle infinie jusqu'au fill (s'arrête seulement si l'ordre est fill ou Ctrl+C)
+                while not filled:
+                    elapsed = time.time() - start_time
+                    elapsed_int = int(elapsed)
+                    time_since_last_adjustment = time.time() - last_adjustment_time
                     
-                    # Annuler l'ordre actuel
+                    # Vérifier d'abord si l'ordre est fill (priorité absolue)
+                    extended_positions = self.extended_client.get_positions()
+                    extended_pos = next((p for p in extended_positions if p['symbol'] == symbol), None)
+                    
+                    if extended_pos:
+                        filled_size = abs(float(extended_pos.get('size', 0)))
+                        if filled_size >= extended_size * 0.90:  # 90% fill minimum
+                            filled = True
+                            logger.success(f"✅ Ordre Extended FILL détecté: {filled_size:.6f} {symbol}")
+                            break
+                    
+                    # Vérifier aussi via les ordres ouverts
+                    try:
+                        account_updates = self.extended_client.get_account_updates()
+                        orders_cache = account_updates.get('orders', [])
+                        current_order_exists = any(
+                            o.get('id') == current_order_id and o.get('status') in ['NEW', 'UNTRIGGERED', 'PARTIALLY_FILLED']
+                            for o in orders_cache
+                        )
+                        
+                        # Si l'ordre n'existe plus dans l'orderbook et qu'on a une position, c'est fill
+                        if not current_order_exists and extended_pos:
+                            filled_size = abs(float(extended_pos.get('size', 0)))
+                            if filled_size > 0:
+                                filled = True
+                                logger.success(f"✅ Ordre Extended FILL (ordre disparu de l'orderbook): {filled_size:.6f} {symbol}")
+                                break
+                    except:
+                        pass  # Ignorer les erreurs de vérification
+                    
+                    time.sleep(check_interval)
+                    
+                    # Récupérer les prix actuels du marché directement depuis le cache WebSocket
+                    orderbook_data = self.extended_client.get_orderbook_data(symbol)
+                    if orderbook_data:
+                        ext_bid_current = float(orderbook_data.get('bid', 0))
+                        ext_ask_current = float(orderbook_data.get('ask', 0))
+                    else:
+                        # Fallback sur get_ticker si WebSocket pas disponible
+                        extended_ticker_current = self.extended_client.get_ticker(symbol)
+                        ext_bid_current = float(extended_ticker_current.get('bid', 0))
+                        ext_ask_current = float(extended_ticker_current.get('ask', 0))
+                    
+                    # Déterminer le prix cible actuel (bid pour BUY, ask pour SELL)
+                    if extended_side == "buy":
+                        target_price = ext_bid_current
+                        price_diff = abs(target_price - current_limit_price)
+                        price_diff_pct = (price_diff / current_limit_price) * 100 if current_limit_price > 0 else 0
+                    else:  # sell
+                        target_price = ext_ask_current
+                        price_diff = abs(target_price - current_limit_price)
+                        price_diff_pct = (price_diff / current_limit_price) * 100 if current_limit_price > 0 else 0
+                    
+                    # Afficher le statut avec informations de stratégie
+                    strategy_info = ""
+                    if elapsed < INITIAL_DELAY:
+                        strategy_info = f" | ⏳ Délai initial ({INITIAL_DELAY - elapsed_int}s)"
+                    else:
+                        strategy_info = f" | 📊 Suivi actif (bid/ask exact)"
+                    
+                    print(f"\r⏳ Ordre @ ${current_limit_price:.2f} | Marché @ ${target_price:.2f} | Écart: ${price_diff:.2f} ({price_diff_pct:.3f}%) | {elapsed_int}s{strategy_info}", end="", flush=True)
+                    
+                    # VÉRIFICATION CRITIQUE: Vérifier le fill AVANT de réajuster l'ordre
+                    extended_positions_check = self.extended_client.get_positions()
+                    extended_pos_check = next((p for p in extended_positions_check if p['symbol'] == symbol), None)
+                    if extended_pos_check:
+                        filled_size_check = abs(float(extended_pos_check.get('size', 0)))
+                        if filled_size_check >= extended_size * 0.90:
+                            filled = True
+                            print()  # Nouvelle ligne
+                            logger.success(f"✅ Ordre Extended FILL détecté avant réajustement: {filled_size_check:.6f} {symbol}")
+                            break
+                    
+                    # CONDITIONS POUR RÉAJUSTER:
+                    # 1. Délai initial écoulé (INITIAL_DELAY secondes)
+                    # 2. Écart supérieur à la tolérance adaptative (0.05% du prix)
+                    # 3. Délai minimum entre réajustements respecté (MIN_ADJUSTMENT_INTERVAL)
+                    can_adjust = (
+                        elapsed >= INITIAL_DELAY and  # Délai initial écoulé
+                        price_diff > price_tolerance and  # Écart supérieur à la tolérance
+                        time_since_last_adjustment >= MIN_ADJUSTMENT_INTERVAL  # Délai minimum entre réajustements
+                    )
+                    
+                    if can_adjust and not filled:
+                        print()  # Nouvelle ligne
+                        fill_attempt += 1
+                        
+                        # Toujours utiliser le bid/ask exact (pas d'offset d'agressivité)
+                        # LONG (buy) → bid exact
+                        # SHORT (sell) → ask exact
+                        new_limit_price = target_price
+                        
+                        logger.info(f"\n🔄 Réajustement #{fill_attempt} - Écart: ${price_diff:.2f} ({price_diff_pct:.3f}%)")
+                        logger.info(f"   Temps écoulé: {elapsed_int}s | Tolérance: ${price_tolerance:.2f} ({TOLERANCE_PCT}%)")
+                        logger.info(f"   Ordre actuel: ${current_limit_price:.2f} | Marché: ${target_price:.2f}")
+                        if extended_side == "buy":
+                            logger.info(f"   Nouveau prix: ${new_limit_price:.2f} (bid exact pour LONG)")
+                        else:
+                            logger.info(f"   Nouveau prix: ${new_limit_price:.2f} (ask exact pour SHORT)")
+                        logger.info("🗑️  Annulation de l'ordre Extended...")
+                        
+                        # Annuler l'ordre actuel
+                        try:
+                            if current_order_id:
+                                self.extended_client.cancel_order(current_order_id)
+                                logger.success("✅ Ordre Extended annulé")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Annulation Extended échouée: {e} (peut-être déjà fill ou annulé)")
+                        
+                        logger.info(f"🔄 Nouveau prix: ${new_limit_price:.2f} | Taille: {extended_size:.6f} (inchangée)")
+                        
+                        # Replacer l'ordre avec post_only=True au bid/ask exact
+                        extended_result_new = self.extended_client.place_order(
+                            symbol=symbol,
+                            side=extended_side,
+                            size=extended_size,
+                            order_type="limit",
+                            price=new_limit_price,
+                            post_only=True  # 🔥 Toujours post_only=True pour garantir maker
+                        )
+                        
+                        if not extended_result_new or extended_result_new.get('status') not in ['OK', 'ok', 'success']:
+                            error_msg = extended_result_new.get('error', 'Unknown') if extended_result_new else 'No result'
+                            logger.error(f"❌ Échec placement ordre réajusté: {error_msg}")
+                            break
+                        
+                        current_order_id = extended_result_new.get('order_id')
+                        current_limit_price = new_limit_price
+                        last_adjustment_time = time.time()
+                        
+                        # Recalculer la tolérance avec le nouveau prix
+                        price_tolerance = current_limit_price * (TOLERANCE_PCT / 100)
+                        
+                        logger.success(f"✅ Ordre LIMIT réajusté (#{fill_attempt}): {current_order_id} @ ${new_limit_price:.2f}")
+                        time.sleep(1)  # Attendre que l'ordre soit enregistré
+                
+                print()  # Nouvelle ligne après la boucle
+                
+                # Si on sort de la boucle sans fill, c'est probablement une erreur ou Ctrl+C
+                if not filled:
+                    elapsed_total = int(time.time() - start_time)
+                    logger.warning(f"⚠️  Sortie de la boucle de suivi après {elapsed_total}s et {fill_attempt} réajustements")
+                    logger.warning("   (Peut être dû à Ctrl+C ou une erreur)")
+                    
+                    # Annuler le dernier ordre s'il existe
                     try:
                         if current_order_id:
                             self.extended_client.cancel_order(current_order_id)
-                            logger.success("✅ Ordre Extended annulé")
+                            logger.success("✅ Dernier ordre Extended annulé")
                     except Exception as e:
-                        logger.warning(f"⚠️  Annulation Extended échouée: {e} (peut-être déjà fill ou annulé)")
+                        logger.warning(f"⚠️  Annulation échouée: {e}")
                     
-                    # Utiliser le bid/ask exact actuel (même agressivité)
-                    new_limit_price = target_price
-                    
-                    logger.info(f"🔄 Nouveau prix: ${new_limit_price:.2f} (bid/ask exact) | Taille: {extended_size:.6f} (inchangée)")
-                    
-                    # Replacer l'ordre avec post_only=True
-                    extended_result_new = self.extended_client.place_order(
-                        symbol=symbol,
-                        side=extended_side,
-                        size=extended_size,
-                        order_type="limit",
-                        price=new_limit_price,
-                        post_only=True  # 🔥 Toujours post_only=True pour garantir maker
-                    )
-                    
-                    if not extended_result_new or extended_result_new.get('status') not in ['OK', 'ok', 'success']:
-                        error_msg = extended_result_new.get('error', 'Unknown') if extended_result_new else 'No result'
-                        logger.error(f"❌ Échec placement ordre réajusté: {error_msg}")
-                        break
-                    
-                    current_order_id = extended_result_new.get('order_id')
-                    current_limit_price = new_limit_price
-                    logger.success(f"✅ Ordre LIMIT réajusté (#{fill_attempt}): {current_order_id} @ ${new_limit_price:.2f}")
-                    time.sleep(1)  # Attendre que l'ordre soit enregistré
+                    # Retourner une erreur
+                    return (False, None, None)
             
-            print()  # Nouvelle ligne après la boucle
-            
-            # Si on sort de la boucle sans fill, c'est probablement une erreur ou Ctrl+C
-            if not filled:
-                elapsed_total = int(time.time() - start_time)
-                logger.warning(f"⚠️  Sortie de la boucle de suivi après {elapsed_total}s et {fill_attempt} réajustements")
-                logger.warning("   (Peut être dû à Ctrl+C ou une erreur)")
-                
-                # Annuler le dernier ordre s'il existe
-                try:
-                    if current_order_id:
-                        self.extended_client.cancel_order(current_order_id)
-                        logger.success("✅ Dernier ordre Extended annulé")
-                except Exception as e:
-                    logger.warning(f"⚠️  Annulation échouée: {e}")
-                
-                # Retourner une erreur
-                return (False, None, None)
+            # Si l'ordre a été fill immédiatement, on a déjà filled = True, donc on passe directement à l'étape 6
             
             # ÉTAPE 6: Ordre Extended fill → placer MARKET sur Lighter IMMÉDIATEMENT
             logger.info(f"Étape 6: Ordre Extended fill → Placement MARKET Lighter ({lighter_side.upper()})...")
@@ -859,6 +984,13 @@ class DNLighterExtended:
             lighter_order_id = lighter_result.get('order_id', lighter_result.get('data', {}).get('id'))
             logger.success(f"✅ Ordre MARKET Lighter placé: {lighter_order_id}")
             
+            # IMPORTANT: Attendre que les matching engines traitent les ordres
+            # Les ordres market peuvent prendre quelques secondes à être exécutés
+            # ⚠️ L'API peut accepter un ordre qui sera ensuite rejeté par le matching engine
+            # Cela permet aussi au WebSocket positions de se synchroniser pour le monitoring PnL
+            logger.info("⏳ Attente de l'exécution par les matching engines (7s)...")
+            time.sleep(7)
+            
             logger.success(f"✅ Ordre Extended placé: {extended_order_id}")
             logger.success(f"✅ Ordre Lighter placé: {lighter_order_id}")
             
@@ -887,6 +1019,50 @@ class DNLighterExtended:
         logger.info("="*60)
         
         try:
+            # VÉRIFICATION PRÉALABLE: Vérifier si des positions sont déjà ouvertes
+            logger.info("🔍 Vérification des positions existantes...")
+            extended_positions_check = self.extended_client.get_positions()
+            extended_pos_existing = next((p for p in extended_positions_check if p['symbol'] == symbol), None)
+            
+            lighter_positions_check = self.lighter_client.get_positions()
+            lighter_pos_existing = next((p for p in lighter_positions_check if p.get('symbol') == symbol), None)
+            
+            if extended_pos_existing or lighter_pos_existing:
+                logger.warning("⚠️  Positions déjà ouvertes détectées!")
+                if extended_pos_existing:
+                    ext_size = abs(float(extended_pos_existing.get('size', 0)))
+                    ext_side = extended_pos_existing.get('side', 'UNKNOWN')
+                    logger.warning(f"   Extended: {ext_side} {ext_size:.6f} {symbol}")
+                if lighter_pos_existing:
+                    light_size_signed = float(lighter_pos_existing.get('size_signed', 0))
+                    light_size = abs(light_size_signed) if light_size_signed != 0 else abs(float(lighter_pos_existing.get('size', 0)))
+                    light_side = "LONG" if light_size_signed > 0 else "SHORT" if light_size_signed < 0 else lighter_pos_existing.get('side', 'UNKNOWN')
+                    logger.warning(f"   Lighter: {light_side} {light_size:.6f} {symbol}")
+                
+                logger.warning("   Fermeture des positions existantes avant de continuer...")
+                close_success = self.close_positions(symbol)
+                
+                if not close_success:
+                    logger.error("❌ Échec fermeture des positions existantes")
+                    return (False, None, None)
+                
+                logger.success("✅ Positions existantes fermées")
+                logger.info("⏳ Attente de 5 secondes pour confirmation...")
+                time.sleep(5)  # Attendre que les positions soient bien fermées
+                
+                # Vérifier à nouveau que les positions sont bien fermées
+                extended_positions_verify = self.extended_client.get_positions()
+                extended_pos_verify = next((p for p in extended_positions_verify if p['symbol'] == symbol), None)
+                
+                lighter_positions_verify = self.lighter_client.get_positions()
+                lighter_pos_verify = next((p for p in lighter_positions_verify if p.get('symbol') == symbol), None)
+                
+                if extended_pos_verify or lighter_pos_verify:
+                    logger.error("❌ Des positions sont toujours ouvertes après fermeture")
+                    return (False, None, None)
+                
+                logger.success("✅ Vérification: Aucune position ouverte, on peut continuer")
+            
             # ÉTAPE 1: Récupérer les prix en temps réel
             logger.info("Étape 1: Récupération des prix...")
             extended_ticker = self.extended_client.get_ticker(symbol)
@@ -982,7 +1158,7 @@ class DNLighterExtended:
                     
                     try:
                         # Vérifier avec l'API Explorer si la position existe
-                        lighter_positions = self.lighter_client.get_positions_from_explorer()
+                        lighter_positions = self.lighter_client.get_positions()
                         lighter_pos = next((p for p in lighter_positions if p.get('symbol') == symbol), None)
                         
                         if lighter_pos:
@@ -1046,7 +1222,7 @@ class DNLighterExtended:
     def verify_trades_opened(self, symbol: str, timeout: int = 40) -> Tuple[bool, str]:
         """
         Vérifie que les deux trades sont ouverts et ont des tailles similaires
-        Utilise l'API Explorer pour Lighter (plus fiable que WebSocket après placement d'ordre)
+        Utilise get_positions() pour Lighter (WebSocket + API REST fallback)
         
         Args:
             symbol: Symbole à vérifier
@@ -1056,7 +1232,7 @@ class DNLighterExtended:
             Tuple (success, reason)
         """
         logger.info(f"🔍 Vérification des trades ouverts (timeout: {timeout}s)...")
-        logger.info(f"   Utilise l'API Explorer pour Lighter (plus fiable)")
+        logger.info(f"   Utilise get_positions() pour Lighter (WebSocket + API REST)")
         
         start = time.time()
         check_count = 0
@@ -1069,8 +1245,8 @@ class DNLighterExtended:
                 extended_positions = self.extended_client.get_positions()
                 extended_pos = next((p for p in extended_positions if p['symbol'] == symbol), None)
                 
-                # Récupérer positions Lighter (API Explorer - plus fiable après placement d'ordre)
-                lighter_positions = self.lighter_client.get_positions_from_explorer()
+                # Récupérer positions Lighter (get_positions() utilise WebSocket + API REST fallback)
+                lighter_positions = self.lighter_client.get_positions()
                 lighter_pos = next((p for p in lighter_positions if p.get('symbol') == symbol), None)
                 
                 # Debug tous les 3 checks (plus fréquent pour mieux voir)
@@ -1080,10 +1256,18 @@ class DNLighterExtended:
                     
                     # Debug: afficher toutes les positions disponibles
                     if check_count % 9 == 0:  # Tous les 9 checks
-                        logger.debug(f"      Extended positions: {len(extended_positions)} total")
-                        logger.debug(f"      Lighter positions: {len(lighter_positions)} total")
+                        logger.info(f"      Extended positions: {len(extended_positions)} total")
+                        if extended_positions:
+                            logger.info(f"      Extended symbols: {[p.get('symbol') for p in extended_positions]}")
+                        
+                        logger.info(f"      Lighter positions: {len(lighter_positions)} total")
                         if lighter_positions:
-                            logger.debug(f"      Lighter symbols: {[p.get('symbol') for p in lighter_positions]}")
+                            logger.info(f"      Lighter symbols: {[p.get('symbol') for p in lighter_positions]}")
+                            # Afficher les détails des positions Lighter
+                            for p in lighter_positions:
+                                logger.info(f"         - {p.get('symbol')}: {p.get('side')} {p.get('size', 0)} (size_signed: {p.get('size_signed', 0)})")
+                        else:
+                            logger.warning(f"      ⚠️  Aucune position Lighter trouvée (WebSocket connecté: {self.lighter_client.ws_positions_connected})")
                 
                 if extended_pos and lighter_pos:
                     # Vérifier les sizes
@@ -1123,8 +1307,8 @@ class DNLighterExtended:
         extended_positions = self.extended_client.get_positions()
         extended_pos = next((p for p in extended_positions if p['symbol'] == symbol), None)
         
-        # Dernier essai avec Explorer API
-        lighter_positions = self.lighter_client.get_positions_from_explorer()
+        # Dernier essai avec get_positions() (WebSocket + API REST)
+        lighter_positions = self.lighter_client.get_positions()
         lighter_pos = next((p for p in lighter_positions if p.get('symbol') == symbol), None)
         
         logger.error(f"État final:")
@@ -1227,7 +1411,7 @@ class DNLighterExtended:
                 extended_pnl = self.calculate_pnl_extended(extended_pos, symbol)
             
             # Lighter (utiliser API Explorer - plus fiable)
-            lighter_positions = self.lighter_client.get_positions_from_explorer()
+            lighter_positions = self.lighter_client.get_positions()
             lighter_pos = next((p for p in lighter_positions if p.get('symbol') == symbol), None)
             if lighter_pos:
                 lighter_pnl = self.calculate_pnl_lighter(lighter_pos, symbol)
@@ -1251,6 +1435,9 @@ class DNLighterExtended:
         start_time = time.time()
         end_time = start_time + (duration_minutes * 60)
         
+        # Variable pour tracker si on a déjà essayé de reconnecter le WebSocket
+        ws_reconnect_attempted = False
+        
         while time.time() < end_time:
             try:
                 # Récupérer les positions
@@ -1258,8 +1445,17 @@ class DNLighterExtended:
                 extended_pos = next((p for p in extended_positions if p['symbol'] == symbol), None)
                 
                 # Utiliser l'API Explorer pour Lighter (plus fiable)
-                lighter_positions = self.lighter_client.get_positions_from_explorer()
+                lighter_positions = self.lighter_client.get_positions()
                 lighter_pos = next((p for p in lighter_positions if p.get('symbol') == symbol), None)
+                
+                # VÉRIFICATION: Si on a une position Lighter mais pas de market_stats, reconnecter le WebSocket
+                if lighter_pos and not ws_reconnect_attempted:
+                    market_stats = self.lighter_client.get_market_stats_data(symbol)
+                    if not market_stats or not market_stats.get('mark_price'):
+                        logger.debug(f"Position Lighter détectée mais pas de market_stats, reconnexion WebSocket...")
+                        self.lighter_client.ws_market_stats(symbol)
+                        time.sleep(2)  # Attendre que les données arrivent
+                        ws_reconnect_attempted = True
                 
                 # Calculer PnL
                 ext_pnl = 0.0
@@ -1392,7 +1588,7 @@ class DNLighterExtended:
             extended_pos = next((p for p in extended_positions if p['symbol'] == symbol), None)
             
             # Utiliser l'API Explorer pour Lighter (plus fiable)
-            lighter_positions = self.lighter_client.get_positions_from_explorer()
+            lighter_positions = self.lighter_client.get_positions()
             lighter_pos = next((p for p in lighter_positions if p.get('symbol') == symbol), None)
             
             logger.info(f"   Positions Extended: {len(extended_positions)} | Lighter: {len(lighter_positions)}")

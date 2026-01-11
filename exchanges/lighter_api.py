@@ -501,65 +501,178 @@ class LighterAPI:
             
             logger.info(f"🔌 Connexion WebSocket positions Lighter pour account {self.account_index}...")
             
+            def subscribe_to_positions(ws):
+                """Fonction helper pour s'abonner au channel positions avec auth"""
+                try:
+                    auth_token, err = self.signer_client.create_auth_token_with_expiry()
+                    if err:
+                        logger.error(f"Failed to create auth token for WebSocket: {err}")
+                        auth_token = None
+                except Exception as auth_err:
+                    logger.warning(f"Erreur création auth token: {auth_err}")
+                    auth_token = None
+                
+                subscribe_msg = {
+                    "type": "subscribe",
+                    "channel": f"account_all_positions/{self.account_index}"
+                }
+                
+                # Ajouter auth si disponible (requis selon la doc pour comptes privés)
+                if auth_token:
+                    subscribe_msg["auth"] = auth_token
+                    logger.debug(f"Abonnement avec auth token au channel account_all_positions/{self.account_index}")
+                else:
+                    logger.warning(f"Abonnement sans auth token (peut échouer pour compte privé)")
+                
+                ws.send(json.dumps(subscribe_msg))
+                logger.debug(f"Message d'abonnement envoyé: {subscribe_msg}")
+            
             def on_message(ws, message):
                 try:
                     data = json.loads(message)
                     msg_type = data.get('type')
+                    channel = data.get('channel', '')
+                    
+                    logger.info(f"📨 WebSocket positions message reçu: type={msg_type}, channel={channel}")
+                    logger.info(f"   Message brut: {message[:500]}...")  # Afficher les 500 premiers caractères
                     
                     if msg_type == 'connected':
-                        # S'abonner au channel account_all_positions
-                        subscribe_msg = {
-                            "type": "subscribe",
-                            "channel": f"account_all_positions/{self.account_index}"
-                        }
-                        # Ajouter auth si disponible (nécessaire pour certains endpoints)
-                        ws.send(json.dumps(subscribe_msg))
-                        logger.debug(f"Abonnement au channel account_all_positions/{self.account_index}")
+                        # S'abonner au channel account_all_positions avec auth token
+                        # Selon la doc: auth est requis pour les comptes privés
+                        subscribe_to_positions(ws)
                     
-                    elif msg_type in ['subscribed/account_all_positions', 'update/account_all_positions']:
+                    # Gérer les différents types de messages selon la doc
+                    # Le type peut être 'subscribed' ou 'subscribed/account_all_positions'
+                    elif msg_type and 'subscribed' in str(msg_type) and 'account_all_positions' in (channel or str(msg_type) or ''):
+                        logger.debug(f"✅ Abonnement confirmé: {channel}")
+                        # Le premier message peut contenir les positions initiales
+                        positions_data = data.get('positions', {})
+                        if positions_data:
+                            logger.debug(f"   Positions initiales reçues: {len(positions_data)} positions")
+                            # Parser les positions initiales de la même manière que les updates
+                            for market_index_str, position in positions_data.items():
+                                try:
+                                    market_index = int(market_index_str)
+                                    sign = int(position.get('sign', 0))
+                                    position_amount_str = position.get('position', '0')
+                                    position_amount = float(position_amount_str)
+                                    
+                                    if abs(position_amount) < 0.0001:
+                                        continue
+                                    
+                                    symbol = "UNKNOWN"
+                                    for sym, mid in self.market_index_by_symbol.items():
+                                        if mid == market_index:
+                                            symbol = sym
+                                            break
+                                    
+                                    self.positions_cache[market_index] = {
+                                        'symbol': symbol,
+                                        'market_id': market_index,
+                                        'market_index': market_index,
+                                        'side': 'LONG' if sign > 0 else 'SHORT',
+                                        'size': abs(position_amount),
+                                        'size_signed': position_amount * sign,
+                                        'position': position_amount_str,
+                                        'sign': sign,
+                                        'entry_price': float(position.get('avg_entry_price', '0')),
+                                        'unrealized_pnl': float(position.get('unrealized_pnl', '0')),
+                                        'realized_pnl': float(position.get('realized_pnl', '0')),
+                                        'last_update': time.time()
+                                    }
+                                    logger.debug(f"   Position initiale: {symbol} {self.positions_cache[market_index]['side']} {abs(position_amount)}")
+                                except Exception as pos_err:
+                                    logger.error(f"Erreur parsing position initiale {market_index_str}: {pos_err}")
+                    
+                    elif msg_type and 'update' in str(msg_type) and 'account_all_positions' in (channel or str(msg_type) or ''):
                         # Mettre à jour le cache des positions
                         positions_data = data.get('positions', {})
                         shares = data.get('shares', [])
                         
-                        # Parser les positions
+                        logger.debug(f"📊 Mise à jour positions WebSocket: {len(positions_data)} positions, {len(shares)} shares")
+                        
+                        # Parser les positions selon la doc
+                        # Format: positions = { "{MARKET_INDEX}": Position }
                         for market_index_str, position in positions_data.items():
-                            market_index = int(market_index_str)
-                            
-                            # Position JSON selon la doc: sign (1=Long, -1=Short), position (string)
-                            sign = int(position.get('sign', 0))
-                            position_amount = float(position.get('position', '0'))
-                            
-                            if abs(position_amount) < 0.0001:
-                                # Position fermée, retirer du cache
-                                if market_index in self.positions_cache:
-                                    del self.positions_cache[market_index]
-                                continue
-                            
-                            # Trouver le symbole
-                            symbol = "UNKNOWN"
-                            for sym, mid in self.market_index_by_symbol.items():
-                                if mid == market_index:
-                                    symbol = sym
-                                    break
-                            
-                            self.positions_cache[market_index] = {
-                                'symbol': symbol,
-                                'market_id': market_index,
-                                'market_index': market_index,
-                                'side': 'LONG' if sign > 0 else 'SHORT',
-                                'size': abs(position_amount),
-                                'size_signed': position_amount * sign,
-                                'position': str(position_amount),
-                                'sign': sign,
-                                'entry_price': float(position.get('avg_entry_price', '0')),
-                                'unrealized_pnl': float(position.get('unrealized_pnl', '0')),
-                                'realized_pnl': float(position.get('realized_pnl', '0')),
-                                'last_update': time.time()
-                            }
-                            logger.debug(f"Position mise à jour: {symbol} {self.positions_cache[market_index]['side']} {abs(position_amount)}")
+                            try:
+                                market_index = int(market_index_str)
+                                
+                                # Position JSON selon la doc: sign (1=Long, -1=Short), position (string)
+                                sign = int(position.get('sign', 0))
+                                position_amount_str = position.get('position', '0')
+                                position_amount = float(position_amount_str)
+                                
+                                if abs(position_amount) < 0.0001:
+                                    # Position fermée, mais ne pas la supprimer immédiatement du cache
+                                    # Car cela pourrait être une erreur temporaire ou un arrondi
+                                    # On la marque comme fermée mais on la garde dans le cache pendant 60 secondes
+                                    # pour éviter de perdre les données si c'est une erreur
+                                    if market_index in self.positions_cache:
+                                        old_pos = self.positions_cache[market_index]
+                                        old_size = abs(float(old_pos.get('position', 0)))
+                                        # Si la position était significative avant (> 0.0001), logger un warning
+                                        if old_size > 0.0001:
+                                            logger.warning(f"⚠️  Position WebSocket semble fermée (size={position_amount}) pour {old_pos.get('symbol', 'UNKNOWN')}, mais on garde dans le cache 60s au cas où")
+                                            # Marquer comme fermée mais garder dans le cache avec un timestamp
+                                            self.positions_cache[market_index]['closed_at'] = time.time()
+                                            self.positions_cache[market_index]['size'] = 0
+                                            self.positions_cache[market_index]['size_signed'] = 0
+                                        else:
+                                            # Si déjà marquée comme fermée depuis plus de 60s, la supprimer
+                                            closed_at = old_pos.get('closed_at', 0)
+                                            if closed_at > 0 and time.time() - closed_at > 60:
+                                                logger.debug(f"   Position fermée depuis >60s, suppression du cache: market_index={market_index}")
+                                                del self.positions_cache[market_index]
+                                    continue
+                                
+                                # Trouver le symbole
+                                symbol = "UNKNOWN"
+                                for sym, mid in self.market_index_by_symbol.items():
+                                    if mid == market_index:
+                                        symbol = sym
+                                        break
+                                
+                                # Mettre à jour le cache avec toutes les données de la Position selon la doc
+                                old_position = self.positions_cache.get(market_index)
+                                self.positions_cache[market_index] = {
+                                    'symbol': symbol,
+                                    'market_id': market_index,
+                                    'market_index': market_index,
+                                    'side': 'LONG' if sign > 0 else 'SHORT',
+                                    'size': abs(position_amount),
+                                    'size_signed': position_amount * sign,
+                                    'position': position_amount_str,
+                                    'sign': sign,
+                                    'entry_price': float(position.get('avg_entry_price', '0')),
+                                    'unrealized_pnl': float(position.get('unrealized_pnl', '0')),
+                                    'realized_pnl': float(position.get('realized_pnl', '0')),
+                                    'last_update': time.time(),
+                                    # Supprimer le flag closed_at si la position est rouverte
+                                    'closed_at': 0
+                                }
+                                
+                                # Logger si c'est une nouvelle position ou une mise à jour
+                                if old_position:
+                                    time_since_last = time.time() - old_position.get('last_update', 0)
+                                    if time_since_last > 30:
+                                        logger.info(f"📊 Position WebSocket mise à jour après {time_since_last:.0f}s: {symbol} {self.positions_cache[market_index]['side']} {abs(position_amount)}")
+                                    else:
+                                        logger.debug(f"✅ Position mise à jour dans le cache: {symbol} {self.positions_cache[market_index]['side']} {abs(position_amount)} (market_index={market_index})")
+                                else:
+                                    logger.info(f"🆕 Nouvelle position ajoutée au cache: {symbol} {self.positions_cache[market_index]['side']} {abs(position_amount)}")
+                            except Exception as pos_err:
+                                logger.error(f"Erreur parsing position {market_index_str}: {pos_err}")
+                                import traceback
+                                logger.debug(traceback.format_exc())
                     
                     elif msg_type == 'ping':
                         ws.send(json.dumps({"type": "pong"}))
+                    
+                    else:
+                        # Logger les autres types de messages pour debug
+                        logger.debug(f"📨 Message WebSocket positions: type={msg_type}, channel={channel}")
+                        if msg_type not in ['ping', 'pong']:
+                            logger.debug(f"   Données: {data}")
                     
                 except Exception as e:
                     logger.error(f"Error processing positions WebSocket message: {e}")
@@ -581,9 +694,38 @@ class LighterAPI:
                     except:
                         pass
             
+            def subscribe_to_positions(ws):
+                """Fonction helper pour s'abonner au channel positions"""
+                try:
+                    auth_token, err = self.signer_client.create_auth_token_with_expiry()
+                    if err:
+                        logger.error(f"Failed to create auth token for WebSocket: {err}")
+                        auth_token = None
+                except Exception as auth_err:
+                    logger.warning(f"Erreur création auth token: {auth_err}")
+                    auth_token = None
+                
+                subscribe_msg = {
+                    "type": "subscribe",
+                    "channel": f"account_all_positions/{self.account_index}"
+                }
+                
+                # Ajouter auth si disponible (requis selon la doc pour comptes privés)
+                if auth_token:
+                    subscribe_msg["auth"] = auth_token
+                    logger.debug(f"Abonnement avec auth token au channel account_all_positions/{self.account_index}")
+                else:
+                    logger.warning(f"Abonnement sans auth token (peut échouer pour compte privé)")
+                
+                ws.send(json.dumps(subscribe_msg))
+                logger.debug(f"Message d'abonnement envoyé: {subscribe_msg}")
+            
             def on_open(ws):
                 logger.success("✅ WebSocket positions Lighter connecté")
                 self.ws_positions_connected = True
+                # Envoyer l'abonnement immédiatement après connexion
+                time.sleep(0.5)  # Attendre un peu que la connexion soit stable
+                subscribe_to_positions(ws)
             
             def run_ws():
                 self.ws_positions_client = websocket.WebSocketApp(
@@ -626,25 +768,52 @@ class LighterAPI:
             return []
         
         # Essayer d'abord le cache WebSocket (plus rapide et temps réel)
-        # Mais si les données sont trop anciennes (> 2 secondes), utiliser l'API REST pour des données plus fraîches
-        # Le PnL change en temps réel avec le prix, donc on a besoin de données très fraîches
-        if self.ws_positions_connected and self.positions_cache:
-            positions = []
-            cache_too_old = False
-            for market_index, pos_data in self.positions_cache.items():
-                last_update = pos_data.get('last_update', 0)
-                # Vérifier que les données sont récentes (< 60 secondes pour existence, < 2 secondes pour fraîcheur)
-                if time.time() - last_update < 60:
-                    positions.append(pos_data.copy())
-                    # Si une position est trop ancienne (> 2 secondes), on va utiliser l'API REST pour PnL frais
-                    if time.time() - last_update > 2:
-                        cache_too_old = True
-            
-            if positions and not cache_too_old:
-                logger.debug(f"Positions depuis cache WebSocket: {len(positions)} positions")
-                return positions
-            elif cache_too_old:
-                logger.debug("Cache WebSocket Lighter trop ancien (>2s), utilisation de l'API REST pour PnL frais")
+        # Utiliser le cache WebSocket même s'il est un peu ancien (jusqu'à 300 secondes = 5 minutes)
+        # L'API REST peut ne pas retourner les positions, donc le cache WebSocket est préférable
+        # Si le WebSocket est connecté, on fait confiance au cache même s'il est ancien
+        if self.ws_positions_connected:
+            # Si le cache existe et contient des données
+            if self.positions_cache:
+                positions = []
+                for market_index, pos_data in self.positions_cache.items():
+                    # Ignorer les positions marquées comme fermées
+                    if pos_data.get('closed_at', 0) > 0:
+                        closed_at = pos_data.get('closed_at', 0)
+                        # Si fermée depuis plus de 60s, ne pas l'inclure
+                        if time.time() - closed_at > 60:
+                            continue
+                        # Si fermée récemment (<60s), ne pas l'inclure non plus (c'est une position fermée)
+                        continue
+                    
+                    last_update = pos_data.get('last_update', 0)
+                    # Ignorer les positions avec size = 0 (fermées)
+                    if pos_data.get('size', 0) == 0:
+                        continue
+                    
+                    # Utiliser les données du cache si elles sont récentes (< 300 secondes = 5 minutes)
+                    # Même si elles sont anciennes, c'est mieux que l'API REST qui peut ne rien retourner
+                    # Le WebSocket devrait continuer à envoyer des mises à jour, mais si ce n'est pas le cas,
+                    # on garde les dernières positions connues plutôt que de perdre complètement les données
+                    if time.time() - last_update < 300:
+                        positions.append(pos_data.copy())
+                    else:
+                        # Si très ancien (>5min), utiliser quand même si c'est la seule source
+                        logger.debug(f"Position cache très ancienne ({(time.time() - last_update):.0f}s) pour market_index={market_index}, utilisation quand même")
+                        positions.append(pos_data.copy())  # Utiliser quand même plutôt que rien
+                
+                if positions:
+                    # Utiliser le cache WebSocket même s'il est un peu ancien
+                    # C'est plus fiable que l'API REST qui peut ne pas retourner les positions
+                    age_seconds = max([time.time() - p.get('last_update', 0) for p in positions]) if positions else 0
+                    # Supprimer le log warning répétitif, juste debug
+                    logger.debug(f"Positions depuis cache WebSocket (âge: {age_seconds:.0f}s): {len(positions)} positions")
+                    for p in positions:
+                        logger.debug(f"   - {p.get('symbol')}: {p.get('side')} {p.get('size', 0)} (market_index={p.get('market_index')})")
+                    return positions
+            else:
+                # WebSocket connecté mais cache vide - peut-être que les données n'ont pas encore été reçues
+                # On passe au fallback API REST
+                logger.debug(f"WebSocket positions connecté mais cache vide, utilisation de l'API REST")
         
         # Fallback sur API REST
         try:
@@ -688,6 +857,13 @@ class LighterAPI:
                         'unrealized_pnl': float(pos.unrealized_pn_l) if hasattr(pos, 'unrealized_pn_l') else 0,
                         'realized_pnl': float(pos.realized_pn_l) if hasattr(pos, 'realized_pn_l') else 0,
                     })
+            
+            if positions:
+                logger.info(f"✅ Positions depuis API REST: {len(positions)} positions")
+                for p in positions:
+                    logger.debug(f"   - {p.get('symbol')}: {p.get('side')} {p.get('size', 0)} (market_index={p.get('market_index')}, size_signed={p.get('size_signed', 0)})")
+            else:
+                logger.debug(f"✅ Positions depuis API REST: 0 positions")
             
             return positions
             
@@ -747,6 +923,11 @@ class LighterAPI:
             
             response = requests.get(url, headers=headers)
             logger.debug(f"   Status code: {response.status_code}")
+            
+            # Gérer l'erreur 404 gracieusement (compte non trouvé ou pas encore créé)
+            if response.status_code == 404:
+                logger.debug(f"   ⚠️  Compte non trouvé dans l'Explorer API (404) - peut-être pas encore créé sur Lighter")
+                return []  # Retourner une liste vide au lieu de lever une exception
             
             response.raise_for_status()
             
@@ -1018,6 +1199,40 @@ class LighterAPI:
                 else:
                     error_str = str(error)
                     logger.error(f"Failed to set Lighter leverage: {error_str}")
+                    
+                    # Vérifier si c'est l'erreur "invalid nonce" (code 21104)
+                    if '21104' in error_str or 'invalid nonce' in error_str.lower():
+                        logger.warning("⚠️  Erreur nonce invalide (code 21104) lors de la configuration du levier")
+                        logger.warning("   Tentative de réinitialisation du nonce manager...")
+                        # Réinitialiser le nonce manager
+                        try:
+                            if hasattr(self.signer_client, 'nonce_manager') and self.signer_client.nonce_manager:
+                                # Réinitialiser le nonce manager pour forcer la récupération du nonce actuel
+                                self.signer_client.nonce_manager._nonce_cache = {}
+                                logger.debug("   Cache nonce vidé, récupération du nonce actuel...")
+                                
+                                # Attendre un peu avant de réessayer
+                                time.sleep(1)
+                                
+                                # Réessayer de configurer le levier
+                                logger.info(f"Tentative de reconfiguration du levier {leverage}x pour {symbol}...")
+                                result_retry = self._run_async(
+                                    self.signer_client.update_leverage(
+                                        market_index=market_index,
+                                        margin_mode=self.signer_client.CROSS_MARGIN_MODE,
+                                        leverage=leverage
+                                    )
+                                )
+                                
+                                if result_retry and len(result_retry) >= 3:
+                                    tx_info_retry, api_response_retry, error_retry = result_retry
+                                    if error_retry is None:
+                                        logger.success(f"✅ Lighter leverage set to {leverage}x for {symbol} (après retry)")
+                                        return True
+                                    else:
+                                        logger.warning(f"⚠️  Échec retry configuration levier: {error_retry}")
+                        except Exception as retry_err:
+                            logger.warning(f"⚠️  Erreur lors du retry: {retry_err}")
                     
                     # Vérifier si c'est l'erreur "invalid PublicKey" (code 21136)
                     if '21136' in error_str or 'invalid PublicKey' in error_str or 'update the sdk' in error_str:
@@ -2381,13 +2596,20 @@ class LighterAPI:
             cache_data = self.market_stats_cache.get(market_id) or self.market_stats_cache.get(str(market_id))
             
             if cache_data:
-                # Vérifier que les données ne sont pas trop anciennes (< 5 secondes)
-                if time.time() - cache_data.get('last_update', 0) < 5:
+                # Vérifier que les données ne sont pas trop anciennes (< 60 secondes)
+                # Augmenté de 5s à 60s pour plus de robustesse en mode LIMIT
+                age = time.time() - cache_data.get('last_update', 0)
+                if age < 60:
                     return {
                         'mark_price': cache_data.get('mark_price', 0),
                         'index_price': cache_data.get('index_price', 0),
                         'last_trade_price': cache_data.get('last_trade_price', 0)
                     }
+                else:
+                    logger.debug(f"Market stats pour {ticker} trop anciens ({age:.1f}s > 60s)")
+            else:
+                logger.debug(f"Pas de market stats dans le cache pour {ticker} (market_id={market_id})")
+                logger.debug(f"   Cache disponible: {list(self.market_stats_cache.keys())}")
             
             return None
             
